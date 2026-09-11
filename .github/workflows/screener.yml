@@ -1,11 +1,11 @@
 name: screener
 on:
   schedule:
-    - cron: '17 3 * * *'      # 03h17 UTC — les crons GitHub glissent de 15 à 60 min
-  workflow_dispatch:           # relance manuelle : les crons ne sont JAMAIS rejoués
+    - cron: '17 3 * * *'
+  workflow_dispatch:
 
 permissions:
-  contents: write              # requis par le keepalive
+  contents: write
 
 jobs:
   ingestion:
@@ -14,22 +14,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
+        with:
+          python-version: '3.12'
       - run: pip install requests
-      - name: Incrément 1 — écriture de test
+      - name: Increment 1
         env:
           CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
-          CF_DB:      ${{ secrets.CF_D1_SCREENER_ID }}
-          CF_TOKEN:   ${{ secrets.CF_API_TOKEN }}
+          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: python src/incr1_test.py
-      # KEEPALIVE — sur repo public, un workflow planifié est désactivé après
-      # 60 jours sans activité, SILENCIEUSEMENT. Un commit mensuel suffit, et
-      # son absence se verrait dans l'historique.
       - name: Keepalive
         if: always()
         run: |
           date -u +%FT%TZ > .keepalive
-          git config user.name  "screener-bot"
+          git config user.name "screener-bot"
           git config user.email "screener-bot@users.noreply.github.com"
           git add .keepalive
           git diff --staged --quiet || git commit -m "keepalive"
