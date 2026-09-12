@@ -133,8 +133,28 @@ def main():
     titre("DERNIERS RUNS")
     for l in d1("SELECT id, etape, statut, lignes_ecrites, debut, message "
                 "FROM runs ORDER BY id DESC LIMIT 12"):
-        print(f"  {l['id']:4} {l['debut'][:16]} {l['etape']:18} {l['statut']:6} "
-              f"{l['lignes_ecrites']:6}  {(l['message'] or '')[:52]}")
+        n = l['lignes_ecrites'] if l['lignes_ecrites'] is not None else 0
+        print(f"  {l['id']:4} {(l['debut'] or '')[:16]} {(l['etape'] or ''):18} "
+              f"{(l['statut'] or ''):6} {n:6}  {(l['message'] or '')[:52]}")
+
+    titre("SONDES — dernier run de chaque etape")
+    for l in d1("SELECT etape, statut, detail, MAX(id) AS id FROM runs "
+                "WHERE detail IS NOT NULL GROUP BY etape ORDER BY etape"):
+        try:
+            d = json.loads(l["detail"])
+        except Exception:
+            continue
+        print(f"\n  {l['etape']} ({l['statut']})")
+        if isinstance(d, dict):
+            if d.get("duree_s"):
+                print(f"    duree {d['duree_s']} s")
+            for k in ("phases", "compteurs"):
+                if d.get(k):
+                    print(f"    {k} : " + ", ".join(f"{a}={b}" for a, b in d[k].items()))
+            for cat, e in (d.get("erreurs") or {}).items():
+                print(f"    ERREUR {cat} x{e.get('n')} — {e.get('exemple') or ''}")
+            if not any(k in d for k in ("phases", "compteurs", "erreurs")):
+                print(f"    {json.dumps(d)[:160]}")
 
     titre("BUDGET D'ECRITURE DU JOUR")
     tot = d1("SELECT COALESCE(SUM(lignes_ecrites),0) AS n FROM runs "
