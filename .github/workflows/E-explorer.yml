@@ -2,8 +2,14 @@ name: E explorer
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'lister = voir les chemins disponibles, explorer = analyser'
+        required: false
+        default: 'explorer'
+        type: choice
+        options: [explorer, lister]
       places:
-        description: 'Codes de places, vide = toutes (epa, etr, tyo, ...)'
+        description: 'Codes de places, vide = toutes'
         required: false
         default: ''
       cap_min:
@@ -26,6 +32,7 @@ jobs:
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: >
-          python src/univers_intl.py --d1
+          python src/univers_intl.py
+          ${{ inputs.mode == 'lister' && '--lister' || '--d1' }}
           --places "${{ inputs.places }}"
           --cap-min ${{ inputs.cap_min || 2000000000 }}
