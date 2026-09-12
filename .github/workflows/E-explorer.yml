@@ -3,19 +3,21 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'lister = voir les chemins disponibles, explorer = analyser'
+        description: 'Mode'
         required: false
-        default: 'explorer'
+        default: explorer
         type: choice
-        options: [explorer, lister]
+        options:
+          - explorer
+          - lister
       places:
         description: 'Codes de places, vide = toutes'
         required: false
         default: ''
       cap_min:
-        description: 'Capitalisation minimale en devise locale'
+        description: 'Capitalisation minimale EN EUROS (300000000 = 300 M)'
         required: false
-        default: '2000000000'
+        default: '300000000'
 
 jobs:
   explorer:
@@ -35,4 +37,4 @@ jobs:
           python src/univers_intl.py
           ${{ inputs.mode == 'lister' && '--lister' || '--d1' }}
           --places "${{ inputs.places }}"
-          --cap-min ${{ inputs.cap_min || 2000000000 }}
+          --cap-min ${{ inputs.cap_min || 300000000 }}
