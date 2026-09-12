@@ -1,0 +1,19 @@
+name: F tests noyau
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'src/noyau.js'
+      - 'src/test_noyau.mjs'
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Non-regression du noyau
+        run: node src/test_noyau.mjs
