@@ -36,24 +36,37 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 INDEX = "https://stockanalysis.com/list/"
 
-# code de place -> (suffixe Yahoo, pays, presomption PEA, motifs de recherche
-# dans la page d'index). L'eligibilite PEA tient au SIEGE SOCIAL en UE/EEE :
-# la place n'est qu'une presomption, a confirmer societe par societe.
+# Conversion approximative vers l'euro. UN SEUIL EN DEVISE LOCALE N'EST PAS UN
+# SEUIL : 2 milliards valent 12 millions d'euros en yen et 2 milliards en euro.
+# Ces taux servent a CLASSER par taille, jamais a valoriser — un ecart de 10 %
+# ne change aucune decision ici, et le cours reel vient de Yahoo plus tard.
+EN_EUR = {"EUR": 1.0, "SEK": 0.090, "NOK": 0.085, "DKK": 0.134,
+          "CHF": 1.07, "GBP": 1.17, "JPY": 0.0058}
+
+# Bandes de taille, en euros. Elles ne filtrent pas : elles ETIQUETTENT, pour
+# que la couverture des donnees se mesure bande par bande. C'est ce qui dira
+# si les petites capitalisations sont exploitables ou seulement bruyantes.
+BANDES = [(200e9, "mega"), (10e9, "large"), (2e9, "mid"),
+          (300e6, "small"), (0, "micro")]
+
+# code de place -> (suffixe Yahoo, pays, presomption PEA, devise, motifs de
+# recherche). L'eligibilite PEA tient au SIEGE SOCIAL en UE/EEE : la place
+# n'est qu'une presomption, a confirmer societe par societe.
 PLACES = {
-    "epa": (".PA", "FR", True,  ["euronext-paris"]),
-    "ams": (".AS", "NL", True,  ["euronext-amsterdam"]),
-    "ebr": (".BR", "BE", True,  ["euronext-brussels"]),
-    "els": (".LS", "PT", True,  ["euronext-lisbon"]),
-    "etr": (".DE", "DE", True,  ["deutsche-boerse-xetra", "frankfurt-stock-exchange"]),
-    "mil": (".MI", "IT", True,  ["borsa-italiana", "italian"]),
-    "bme": (".MC", "ES", True,  ["madrid"]),
-    "sto": (".ST", "SE", True,  ["stockholm", "nasdaq-stockholm"]),
-    "cph": (".CO", "DK", True,  ["copenhagen"]),
-    "hel": (".HE", "FI", True,  ["helsinki"]),
-    "osl": (".OL", "NO", True,  ["oslo"]),
-    "lon": (".L",  "GB", False, ["london-stock-exchange"]),
-    "swx": (".SW", "CH", False, ["six-swiss", "swiss"]),
-    "tyo": (".T",  "JP", False, ["tokyo-stock-exchange"]),
+    "epa": (".PA", "FR", True,  "EUR", ["euronext-paris"]),
+    "ams": (".AS", "NL", True,  "EUR", ["euronext-amsterdam"]),
+    "ebr": (".BR", "BE", True,  "EUR", ["euronext-brussels"]),
+    "els": (".LS", "PT", True,  "EUR", ["euronext-lisbon"]),
+    "etr": (".DE", "DE", True,  "EUR", ["deutsche-boerse-xetra", "frankfurt-stock-exchange"]),
+    "mil": (".MI", "IT", True,  "EUR", ["borsa-italiana", "italian"]),
+    "bme": (".MC", "ES", True,  "EUR", ["madrid"]),
+    "sto": (".ST", "SE", True,  "SEK", ["stockholm", "nasdaq-stockholm"]),
+    "cph": (".CO", "DK", True,  "DKK", ["copenhagen"]),
+    "hel": (".HE", "FI", True,  "EUR", ["helsinki"]),
+    "osl": (".OL", "NO", True,  "NOK", ["oslo"]),
+    "lon": (".L",  "GB", False, "GBP", ["london-stock-exchange"]),
+    "swx": (".SW", "CH", False, "CHF", ["six-swiss", "swiss"]),
+    "tyo": (".T",  "JP", False, "JPY", ["tokyo-stock-exchange"]),
 }
 
 # Formes juridiques retirees avant comparaison : « Apple Inc. » et « Apple
@@ -120,7 +133,7 @@ def decouvrir_chemins(s_debug=False):
     liens = set(re.findall(r'/list/([a-z0-9\-]+)/', html))
     print(f"  {len(liens)} chemins publies sur la page d'index")
     trouves = {}
-    for code, (_, _, _, motifs) in PLACES.items():
+    for code, (_, _, _, _, motifs) in PLACES.items():
         for m in motifs:
             exact = [l for l in liens if l == m]
             approx = [l for l in liens if m in l]
@@ -215,7 +228,8 @@ def charger_sec():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--places", default="")
-    ap.add_argument("--cap-min", type=float, default=2e9)
+    ap.add_argument("--cap-min", type=float, default=300e6,
+                    help="seuil EN EUROS, converti depuis la devise de place")
     ap.add_argument("--lister", action="store_true",
                     help="affiche les chemins publies sur la page d'index et s'arrete")
     ap.add_argument("--d1", action="store_true",
@@ -223,7 +237,7 @@ def main():
     a = ap.parse_args()
 
     cibles = [p.strip() for p in a.places.split(",") if p.strip()] or list(PLACES)
-    print("EXPLORATION v2 — aucune ecriture\n")
+    print(f"EXPLORATION v3 — aucune ecriture · seuil {a.cap_min / 1e6:.0f} M EUR\n")
 
     if a.lister:
         try:
@@ -247,11 +261,12 @@ def main():
     sec = charger_sec() if a.d1 else {}
 
     print("\n[places]")
-    vus, resume = {}, []
+    vus, resume, bandes_tot = {}, [], {}
     for code in cibles:
         if code not in PLACES:
             continue
-        suffixe, pays, elig, _ = PLACES[code]
+        suffixe, pays, elig, devise, _ = PLACES[code]
+        taux = EN_EUR.get(devise, 1.0)
         chemin = chemins.get(code)
         if not chemin:
             print(f"{code:5} {pays}  chemin introuvable")
@@ -266,13 +281,24 @@ def main():
 
         lignes, forme = extraire(html)
         avec_cap = sum(1 for l in lignes if l["cap"])
-        secondaires = doublons = retenues = 0
+        secondaires = doublons = retenues = etrangeres = 0
         gardees = []
         for l in lignes:
-            if a.cap_min and l["cap"] and l["cap"] < a.cap_min:
+            l["cap_eur"] = l["cap"] * taux if l["cap"] else None
+            l["bande"] = next((b for s_, b in BANDES if (l["cap_eur"] or 0) >= s_), "micro")
+            if a.cap_min and l["cap_eur"] and l["cap_eur"] < a.cap_min:
                 continue
             n = normaliser(l["nom"])
             if not n:
+                continue
+            if code == "bme" and re.match(r"^X[A-Z]", l["sym"]):
+                etrangeres += 1        # Latibex : cotations latino-americaines
+                continue
+            if code == "mil" and re.match(r"^1[A-Z0-9]", l["sym"]):
+                etrangeres += 1        # lignes etrangeres de Borsa Italiana
+                continue
+            if code == "lon" and re.match(r"^[0-9][A-Z0-9]{3}$", l["sym"]):
+                etrangeres += 1        # lignes internationales du LSE
                 continue
             if n in sec:
                 secondaires += 1          # cotation secondaire d'un deposant SEC
@@ -290,12 +316,17 @@ def main():
             resume.append((code, pays, 0, 0, 0, forme))
             continue
         print(f"{code:5} {pays}  {len(lignes):4} lues{tronque} · {avec_cap} avec capi · "
-              f"{secondaires} secondaires · {doublons} doublons · {retenues} retenues"
+              f"{secondaires} secondaires · {etrangeres} etrangeres · "
+              f"{doublons} doublons · {retenues} retenues"
               f"{'  [PEA]' if elig else ''}")
         for l in gardees[:3]:
-            cap = f"{l['cap'] / 1e9:.1f} Md" if l["cap"] else "n.c."
+            cap = f"{l['cap_eur'] / 1e9:.1f} Md€" if l.get("cap_eur") else "n.c."
             print(f"        {l['sym']:9} -> {l['sym'].replace('.', '-') + suffixe:14}"
-                  f" {cap:>9}  {(l['nom'] or '')[:32]}")
+                  f" {cap:>10} {l['bande']:6} {(l['nom'] or '')[:30]}")
+        for b in ("mega", "large", "mid", "small", "micro"):
+            n = sum(1 for l in gardees if l["bande"] == b)
+            if n:
+                bandes_tot[b] = bandes_tot.get(b, 0) + n
         resume.append((code, pays, len(lignes), secondaires, retenues,
                        "tronque" if tronque else "complet"))
         time.sleep(0.6)
@@ -326,6 +357,10 @@ def main():
         sec_tot += secondaires
         if PLACES[code][2]:
             pea += retenues
+    print("\n  repartition par bande de taille (en euros) :")
+    for b in ("mega", "large", "mid", "small", "micro"):
+        if bandes_tot.get(b):
+            print(f"    {b:6} {bandes_tot[b]:5}")
     print(f"\n  univers retenu apres nettoyage : {tot}")
     print(f"  dont places de la zone PEA     : {pea}")
     print(f"  cotations secondaires ecartees : {sec_tot}")
