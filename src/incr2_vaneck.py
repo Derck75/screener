@@ -162,7 +162,23 @@ def code_pays(valeur):
 # --------------------------------------------------------------------------
 
 def main():
-    print(f"incr2_vaneck v4 — Run {RUN_TS}")
+    print(f"incr2_vaneck v5 — Run {RUN_TS}")
+
+    # Reference : comptes par ETF du dernier run vert. Un effondrement se voit
+    # au seuil plancher ; une DERIVE (page VanEck qui change de forme et sert
+    # un bloc partiel) passerait ce seuil sans etre vue. Une rotation
+    # trimestrielle deplace 10 a 20 % d'un indice, jamais la moitie.
+    ref = {}
+    try:
+        r = d1("SELECT detail FROM runs WHERE etape = ? AND statut = ? "
+               "ORDER BY id DESC LIMIT 1", ["incr2_vaneck", "OK"])
+        lignes_ref = r[0]["results"]
+        if lignes_ref and lignes_ref[0].get("detail"):
+            ref = json.loads(lignes_ref[0]["detail"])
+    except Exception:
+        ref = {}
+    print(f"reference du dernier run vert : {ref or 'aucune (premier run)'}")
+
     print("Lecture des holdings VanEck :")
 
     par_ticker = {}
@@ -170,11 +186,20 @@ def main():
     non_resolus = []
     panne = []
 
+    comptes = {}
     for cle in ETF:
         lignes = holdings(cle)
         if lignes is None or len(lignes) < CANARI_MIN[cle]:
-            panne.append(cle)
+            panne.append(f"{cle} (plancher)")
             continue
+        comptes[cle] = len(lignes)
+        avant = ref.get(cle)
+        if avant:
+            derive = abs(len(lignes) - avant) / avant
+            if derive > 0.25:
+                panne.append(f"{cle} (derive {round(100 * derive)} % : "
+                             f"{avant} -> {len(lignes)})")
+                continue
         for h in lignes:
             t = vers_yahoo(h["bbg"])
             if not t:
@@ -193,9 +218,10 @@ def main():
     if panne:
         msg = f"canari rouge sur {', '.join(panne)} — aucune ecriture"
         print("PANNE : " + msg)
-        d1("INSERT INTO runs (debut, fin, etape, statut, lignes_ecrites, canari, message)"
-           " VALUES (?, ?, ?, ?, ?, ?, ?)",
-           [RUN_TS, RUN_TS, "incr2_vaneck", "PANNE", 0, "ROUGE", msg])
+        d1("INSERT INTO runs (debut, fin, etape, statut, lignes_ecrites, canari, message, detail)"
+           " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+           [RUN_TS, RUN_TS, "incr2_vaneck", "PANNE", 0, "ROUGE", msg,
+            json.dumps(comptes)])
         sys.exit(1)
 
     print(f"\n{len(par_ticker)} societes distinctes apres dedoublonnage")
@@ -266,11 +292,12 @@ def main():
     n_pea = pea[0]["results"][0]["n"]
     print(f"dont eligibles PEA    : {n_pea}")
 
-    d1("INSERT INTO runs (debut, fin, etape, statut, lignes_ecrites, canari, message)"
-       " VALUES (?, ?, ?, ?, ?, ?, ?)",
+    d1("INSERT INTO runs (debut, fin, etape, statut, lignes_ecrites, canari, message, detail)"
+       " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
        [RUN_TS, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "incr2_vaneck", "OK", ecrites, "VERT",
-        f"{ecrites} societes, {sorties} sorties, {len(non_resolus)} non resolus, {n_pea} PEA"])
+        f"{ecrites} societes, {sorties} sorties, {len(non_resolus)} non resolus, {n_pea} PEA",
+        json.dumps(comptes)])
     print("OK")
 
 
