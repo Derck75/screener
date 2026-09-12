@@ -63,7 +63,7 @@ NOMS_PAYS = {
     "slovakia": "SK", "slovenia": "SI", "spain": "ES", "sweden": "SE",
     "iceland": "IS", "liechtenstein": "LI", "norway": "NO",
     "united states": "US", "united kingdom": "GB", "switzerland": "CH",
-    "japan": "JP", "china": "CN", "hong kong": "HK", "taiwan": "TW",
+    "japan": "JP", "china": "CN", "hong kong": "HK", "taiwan": "TW", "taiwan region": "TW",
     "south korea": "KR", "korea": "KR", "india": "IN", "brazil": "BR",
     "canada": "CA", "australia": "AU", "singapore": "SG", "mexico": "MX",
     "south africa": "ZA", "israel": "IL", "indonesia": "ID", "thailand": "TH",
@@ -131,19 +131,20 @@ def holdings(cle):
 
 
 def vers_yahoo(bbg):
-    """'MSFT US' -> 'MSFT' ; 'AIR FP' -> 'AIR.PA' ; inconnu -> None."""
+    """Copie conforme de bloombergVersYahoo du worker.
+    'AMZN' -> 'AMZN' (US, aucun suffixe) ; 'BF/B' -> 'BF-B' ;
+    'AIR FP' -> 'AIR.PA' ; place non mappee -> None."""
     if not bbg:
         return None
-    if bbg in BBG_EXCEPTIONS:
-        return BBG_EXCEPTIONS[bbg]
-    morceaux = bbg.split()
-    if len(morceaux) < 2:
-        return None
-    base, pays = morceaux[0], morceaux[-1].upper()
-    if pays == "US":
-        return base
-    suffixe = BBG_YAHOO.get(pays)
-    return base + suffixe if suffixe else None
+    b = bbg.strip()
+    if b in BBG_EXCEPTIONS:
+        return BBG_EXCEPTIONS[b]
+    p = b.split()
+    if len(p) == 1:
+        return p[0].replace("/", "-")
+    suf = BBG_YAHOO.get(p[-1].upper())
+    base = "".join(p[:-1]).replace("/", "-")
+    return base + suf if suf else None
 
 
 def code_pays(valeur):
@@ -161,7 +162,7 @@ def code_pays(valeur):
 # --------------------------------------------------------------------------
 
 def main():
-    print(f"incr2_vaneck v3 — Run {RUN_TS}")
+    print(f"incr2_vaneck v4 — Run {RUN_TS}")
     print("Lecture des holdings VanEck :")
 
     par_ticker = {}
@@ -211,24 +212,25 @@ def main():
             elig, src = 1, f"siege {cp} (UE/EEE) — source VanEck, a confirmer courtier"
         else:
             elig, src = 0, f"siege {cp} hors UE/EEE — source VanEck"
-        place = None
-        if "." in t and not t.startswith("?"):
-            place = t.split(".")[-1]
-        elif not t.startswith("?"):
-            place = "US"
+        place = t.split(".")[-1] if "." in t else "US"
         rangs.append([t, e["bbg"], e["nom"], cp, place, e["secteur"],
-                      elig, src, ",".join(e["etf"]), RUN_TS])
+                      elig, src, ",".join(e["etf"]), RUN_TS, RUN_TS])
 
     # Ecriture ligne par ligne : 10 variables liees par requete. D1 plafonne
     # a 100, et un lot qui depasse fait echouer le run entier.
     COLS = ("ticker, ticker_bbg, nom, pays_siege, place, secteur, "
-            "eligible_pea, source_eligibilite, vaneck, maj")
+            "eligible_pea, source_eligibilite, vaneck, maj, vaneck_vu_le")
     MAJ = ("nom=excluded.nom, pays_siege=excluded.pays_siege, "
            "place=excluded.place, secteur=excluded.secteur, "
            "eligible_pea=excluded.eligible_pea, "
            "source_eligibilite=excluded.source_eligibilite, "
-           "vaneck=excluded.vaneck, vaneck_sorti_le=NULL, maj=excluded.maj")
-    SQL = (f"INSERT INTO societe ({COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+           "vaneck=excluded.vaneck, vaneck_sorti_le=NULL, maj=excluded.maj, "
+           "vaneck_vu_le=excluded.vaneck_vu_le, "
+           "origine=CASE WHEN origine IS NULL THEN 'vaneck' "
+           "WHEN instr(origine,'vaneck')>0 THEN origine "
+           "ELSE origine||',vaneck' END")
+    SQL = (f"INSERT INTO societe ({COLS}, origine) "
+           f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'vaneck') "
            f"ON CONFLICT(ticker) DO UPDATE SET {MAJ}")
     ecrites = 0
     for ligne in rangs:
@@ -239,7 +241,8 @@ def main():
 
     # Sorties d'indice : journalisees, jamais effacees.
     res = d1("UPDATE societe SET vaneck_sorti_le = ? "
-             "WHERE vaneck IS NOT NULL AND vaneck_sorti_le IS NULL AND maj < ?",
+             "WHERE vaneck IS NOT NULL AND vaneck_sorti_le IS NULL "
+             "AND (vaneck_vu_le IS NULL OR vaneck_vu_le < ?)",
              [RUN_TS, RUN_TS])
     sorties = res[0].get("meta", {}).get("changes", 0)
 
