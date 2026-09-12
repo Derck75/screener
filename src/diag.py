@@ -97,12 +97,6 @@ def main():
     print(f"  sans BFR                     : {r['sans_bfr']} ({round(100*r['sans_bfr']/t,1)} %)")
     print(f"  exploitation calculable      : {r['complet']} ({round(100*r['complet']/t,1)} %)")
 
-    print("\n  societes dont la base d'exploitation est PARTIELLE :")
-    for l in d1("SELECT ticker, COUNT(*) AS tot, "
-                "SUM(CASE WHEN ppe IS NOT NULL AND bfr_exploitation IS NOT NULL "
-                "THEN 1 ELSE 0 END) AS ok FROM comptes GROUP BY ticker "
-                "HAVING ok > 0 AND ok < tot LIMIT 1")[:1]:
-        pass
     r2 = d1("SELECT COUNT(*) AS n FROM (SELECT ticker, COUNT(*) AS tot, "
             "SUM(CASE WHEN ppe IS NOT NULL AND bfr_exploitation IS NOT NULL "
             "THEN 1 ELSE 0 END) AS ok FROM comptes GROUP BY ticker "
@@ -142,10 +136,16 @@ def main():
         print(f"  {l['id']:4} {l['debut'][:16]} {l['etape']:18} {l['statut']:6} "
               f"{l['lignes_ecrites']:6}  {(l['message'] or '')[:52]}")
 
-    tot = d1("SELECT SUM(lignes_ecrites) AS n FROM runs WHERE debut >= date('now')")[0]["n"]
-    print(f"\n  lignes ecrites aujourd'hui (hors index) : {tot or 0}")
-    print("  rappel : Cloudflare compte AUSSI les ecritures d'index —")
-    print("  metriques porte 2 index, societe 1 : le cout reel est 2 a 3x ce chiffre.")
+    titre("BUDGET D'ECRITURE DU JOUR")
+    tot = d1("SELECT COALESCE(SUM(lignes_ecrites),0) AS n FROM runs "
+             "WHERE debut >= date('now')")[0]["n"] or 0
+    print(f"  lignes declarees par les runs du jour : {tot}")
+    print(f"  plafond D1 Free                       : 100000")
+    print("  Cloudflare compte aussi les ecritures d'INDEX : metriques en porte 2,")
+    print("  societe 1 — le cout reel depasse le chiffre ci-dessus.")
+    for l in d1("SELECT etape, COUNT(*) AS runs, SUM(lignes_ecrites) AS n FROM runs "
+                "WHERE debut >= date('now') GROUP BY etape ORDER BY n DESC"):
+        print(f"    {l['etape']:20} {l['runs']} run(s)  {l['n'] or 0} lignes")
 
 
 if __name__ == "__main__":
