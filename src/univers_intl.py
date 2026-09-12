@@ -134,23 +134,42 @@ def decouvrir_chemins(s_debug=False):
 
 
 def extraire(html):
-    """Tableau StockAnalysis : No. | Symbol | Company Name | Market Cap | ..."""
+    """Lit l'EN-TETE du tableau pour situer les colonnes.
+
+    La v2 devinait leur position et se trompait d'un cran : la premiere
+    colonne est « No. », un simple numero de ligne, si bien que le symbole
+    etait lu comme un nom et le nom jamais lu du tout. Un tableau se lit par
+    ses en-tetes, jamais par l'ordre suppose de ses colonnes."""
+    entetes = re.findall(r"<th[^>]*>(.*?)</th>", html, re.S)
+    libelles = [re.sub(r"<[^>]+>", " ", h).strip().lower() for h in entetes]
+
+    def trouver(*motifs):
+        for i, l in enumerate(libelles):
+            if any(m in l for m in motifs):
+                return i
+        return None
+
+    i_sym = trouver("symbol", "ticker")
+    i_nom = trouver("company name", "company", "name")
+    i_cap = trouver("market cap", "marketcap", "mkt cap")
+    if i_sym is None or i_nom is None:
+        return [], f"en-tetes non reconnus : {libelles[:8]}"
+
     lignes = []
     for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S):
         cells = [re.sub(r"<[^>]+>", " ", c).strip()
-                 for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, re.S)]
-        if len(cells) < 3:
+                 for c in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)]
+        if len(cells) <= max(i_sym, i_nom):
             continue
-        i_sym = next((i for i, c in enumerate(cells[:3])
-                      if re.fullmatch(r"[A-Z0-9.\-]{1,12}", c or "")), None)
-        if i_sym is None:
+        sym = cells[i_sym]
+        if not re.fullmatch(r"[A-Za-z0-9.\-]{1,12}", sym or ""):
             continue
-        nom = next((c for c in cells[i_sym + 1:i_sym + 3]
-                    if c and not re.fullmatch(r"[\d.,%\-+$€]+[TBMK]?", c)), "")
-        cap = next((cap_en_nombre(c) for c in cells[i_sym + 1:]
-                    if cap_en_nombre(c) and cap_en_nombre(c) > 1e6), None)
-        lignes.append({"sym": cells[i_sym].upper(), "nom": nom, "cap": cap})
-    return lignes
+        lignes.append({
+            "sym": sym.upper(),
+            "nom": cells[i_nom],
+            "cap": cap_en_nombre(cells[i_cap]) if (i_cap is not None and i_cap < len(cells)) else None,
+        })
+    return lignes, f"colonnes {i_sym}/{i_nom}/{i_cap}"
 
 
 def charger_sec():
@@ -166,13 +185,20 @@ def charger_sec():
         req = u.Request(
             f"https://api.cloudflare.com/client/v4/accounts/{a}/d1/database/{b}/query",
             data=json.dumps({"sql": "SELECT ticker, nom FROM societe WHERE cik IS NOT NULL "
-                                    "ORDER BY ticker LIMIT 5000 OFFSET ?",
-                             "params": [page * 5000]}).encode(),
+                                    "ORDER BY ticker LIMIT 2000 OFFSET ?",
+                             "params": [page * 2000]}).encode(),
             headers={"Authorization": f"Bearer {t}", "Content-Type": "application/json"})
         try:
-            j = json.loads(u.urlopen(req, timeout=60).read())
+            j = json.loads(u.urlopen(req, timeout=90).read())
+        except urllib.error.HTTPError as e:
+            corps = e.read()[:200].decode("utf-8", "replace")
+            print(f"  lecture D1 refusee : HTTP {e.code} — {corps}")
+            return noms
         except Exception as e:
-            print(f"  lecture D1 impossible ({type(e).__name__})")
+            print(f"  lecture D1 impossible : {type(e).__name__} — {str(e)[:150]}")
+            return noms
+        if not j.get("success"):
+            print(f"  lecture D1 refusee : {json.dumps(j.get('errors'))[:200]}")
             return noms
         r = j.get("result", [{}])[0].get("results", [])
         if not r:
@@ -190,12 +216,29 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--places", default="")
     ap.add_argument("--cap-min", type=float, default=2e9)
+    ap.add_argument("--lister", action="store_true",
+                    help="affiche les chemins publies sur la page d'index et s'arrete")
     ap.add_argument("--d1", action="store_true",
                     help="lit l'univers SEC pour detecter les cotations secondaires")
     a = ap.parse_args()
 
     cibles = [p.strip() for p in a.places.split(",") if p.strip()] or list(PLACES)
     print("EXPLORATION v2 — aucune ecriture\n")
+
+    if a.lister:
+        try:
+            html = lire(INDEX)
+        except Exception as e:
+            print(f"index illisible : {type(e).__name__}")
+            sys.exit(1)
+        liens = sorted(set(re.findall(r'/list/([a-z0-9\-]+)/', html)))
+        print(f"{len(liens)} chemins publies :\n")
+        for l in liens:
+            print(f"  {l}")
+        print("\nLes chemins d'INDICE national (dax, cac-40, ftse-mib, omx...) sont")
+        print("preferables aux chemins de PLACE : ils ne contiennent que des")
+        print("societes locales, la ou une place cote aussi les etrangeres.")
+        return
 
     print("[decouverte des chemins]")
     chemins = decouvrir_chemins()
@@ -221,7 +264,7 @@ def main():
             resume.append((code, pays, 0, 0, 0, "erreur"))
             continue
 
-        lignes = extraire(html)
+        lignes, forme = extraire(html)
         avec_cap = sum(1 for l in lignes if l["cap"])
         secondaires = doublons = retenues = 0
         gardees = []
@@ -242,6 +285,10 @@ def main():
             retenues += 1
 
         tronque = " TRONQUE" if len(lignes) >= 499 else ""
+        if not lignes:
+            print(f"{code:5} {pays}  aucune ligne — {forme}")
+            resume.append((code, pays, 0, 0, 0, forme))
+            continue
         print(f"{code:5} {pays}  {len(lignes):4} lues{tronque} · {avec_cap} avec capi · "
               f"{secondaires} secondaires · {doublons} doublons · {retenues} retenues"
               f"{'  [PEA]' if elig else ''}")
