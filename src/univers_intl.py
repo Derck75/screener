@@ -1,64 +1,67 @@
 #!/usr/bin/env python3
 """
-UNIVERS INTERNATIONAL — EXPLORATION, AUCUNE ECRITURE.
+UNIVERS INTERNATIONAL v2 — EXPLORATION, AUCUNE ECRITURE.
 
-Ne touche pas a D1. Ne demande aucun secret Cloudflare. Concu pour tourner
-quand le quota d'ecriture est epuise, et pour repondre AVANT de coder
-l'ingestion a trois questions qui decident de tout :
+CE QUE LA v1 A REVELE, ET QUI CHANGE LA CONCEPTION
+--------------------------------------------------
+Les listes triees par capitalisation sont dominees par des COTATIONS
+SECONDAIRES de societes americaines : NVD = NVIDIA sur Xetra, 1AAPL = Apple
+sur Milan, 0R2V = Apple a Londres. Les ingerer creerait Apple quatre fois et
+noierait les vraies europeennes sous des doublons.
 
-  1. Les listes StockAnalysis sont-elles lisibles par un script, et sous quel
-     format ? Le site sert son HTML cote serveur (verifie en production par le
-     worker), mais la forme du tableau n'est pas garantie.
-  2. Combien de societes par place, et a partir de quelle capitalisation
-     l'univers devient-il raisonnable ?
-  3. Combien de candidates ELIGIBLES PEA en sortent reellement ? C'est le
-     chiffre qui decide si l'objectif « 5 a 10 lignes PEA » est atteignable.
+Le controle par titre ne voit rien : ces pages existent reellement. Il faut un
+garde-fou par SOCIETE, pas par symbole — d'ou la detection par nom normalise,
+contre l'univers SEC deja en base et entre places europeennes.
 
-REGLE DE SECURITE REPRISE DU WORKER : deriver une URL, c'est la deviner. Un
-suffixe mal mappe mene a la page d'une AUTRE societe, dont les comptes
-seraient parfaitement plausibles et parfaitement faux. Le mode --verifier
-controle que la page servie porte bien le symbole attendu.
+Trois autres corrections : les chemins de places sont DECOUVERTS sur la page
+d'index au lieu d'etre devines (cinq 404 en v1), la capitalisation est captee
+pour permettre un filtre de taille, et la pagination est tentee au-dela des
+500 lignes servies par defaut.
 
-Usage :
-    python src/univers_intl.py                 # exploration, toutes les places
-    python src/univers_intl.py --places epa    # une seule place
-    python src/univers_intl.py --verifier 5    # controle 5 URL par place
+LECTURES D1 SEULEMENT si --d1 est passe. Aucune ecriture, jamais : ce script
+doit tourner meme quand le quota d'ecriture est epuise.
 """
 
 import argparse
 import json
+import os
 import re
 import sys
+import unicodedata
 import time
 import urllib.error
 import urllib.request
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+INDEX = "https://stockanalysis.com/list/"
 
-# place StockAnalysis -> (chemin de liste, suffixe Yahoo, pays, eligible PEA)
-# L'eligibilite tient au SIEGE SOCIAL en UE/EEE, pas a la place de cotation :
-# la place n'est ici qu'une presomption a confirmer societe par societe.
+# code de place -> (suffixe Yahoo, pays, presomption PEA, motifs de recherche
+# dans la page d'index). L'eligibilite PEA tient au SIEGE SOCIAL en UE/EEE :
+# la place n'est qu'une presomption, a confirmer societe par societe.
 PLACES = {
-    "epa": ("euronext-paris", ".PA", "FR", True),
-    "ams": ("euronext-amsterdam", ".AS", "NL", True),
-    "ebr": ("euronext-brussels", ".BR", "BE", True),
-    "els": ("euronext-lisbon", ".LS", "PT", True),
-    "etr": ("deutsche-boerse-xetra", ".DE", "DE", True),
-    "mil": ("borsa-italiana", ".MI", "IT", True),
-    "bme": ("bolsa-de-madrid", ".MC", "ES", True),
-    "sto": ("stockholm-stock-exchange", ".ST", "SE", True),
-    "cph": ("copenhagen-stock-exchange", ".CO", "DK", True),
-    "hel": ("helsinki-stock-exchange", ".HE", "FI", True),
-    "osl": ("oslo-stock-exchange", ".OL", "NO", True),
-    # Hors PEA — Brexit et Suisse hors EEE. Utiles en CTO uniquement.
-    "lon": ("london-stock-exchange", ".L", "GB", False),
-    "swx": ("swiss-exchange", ".SW", "CH", False),
-    # Japon : hors PEA, meme mecanique d'ingestion que l'Europe.
-    "tyo": ("tokyo-stock-exchange", ".T", "JP", False),
+    "epa": (".PA", "FR", True,  ["euronext-paris"]),
+    "ams": (".AS", "NL", True,  ["euronext-amsterdam"]),
+    "ebr": (".BR", "BE", True,  ["euronext-brussels"]),
+    "els": (".LS", "PT", True,  ["euronext-lisbon"]),
+    "etr": (".DE", "DE", True,  ["deutsche-boerse-xetra", "frankfurt-stock-exchange"]),
+    "mil": (".MI", "IT", True,  ["borsa-italiana", "italian"]),
+    "bme": (".MC", "ES", True,  ["madrid"]),
+    "sto": (".ST", "SE", True,  ["stockholm", "nasdaq-stockholm"]),
+    "cph": (".CO", "DK", True,  ["copenhagen"]),
+    "hel": (".HE", "FI", True,  ["helsinki"]),
+    "osl": (".OL", "NO", True,  ["oslo"]),
+    "lon": (".L",  "GB", False, ["london-stock-exchange"]),
+    "swx": (".SW", "CH", False, ["six-swiss", "swiss"]),
+    "tyo": (".T",  "JP", False, ["tokyo-stock-exchange"]),
 }
 
-CAP_MIN = 2e9   # en devise locale, ordre de grandeur seulement a ce stade
+# Formes juridiques retirees avant comparaison : « Apple Inc. » et « Apple
+# Inc » doivent se reconnaitre, sinon le dedoublonnage ne sert a rien.
+FORMES = re.compile(
+    r"\b(inc|incorporated|corp|corporation|co|company|ltd|limited|plc|llc|lp|"
+    r"sa|s\.a|nv|n\.v|ag|se|spa|s\.p\.a|as|a\.s|asa|oyj|ab|aktiengesellschaft|"
+    r"holding|holdings|group|groupe|the|sgps|kgaa|bv|b\.v|adr|class|cl)\b", re.I)
 
 
 def lire(url, timeout=45):
@@ -68,151 +71,222 @@ def lire(url, timeout=45):
         return rep.read().decode("utf-8", "replace")
 
 
+TRANSLIT = str.maketrans({"ø": "o", "æ": "ae", "å": "a", "ß": "ss", "đ": "d",
+                          "ł": "l", "þ": "th", "ð": "d", "œ": "oe"})
+
+
+def normaliser(nom):
+    """Rend une cle de comparaison. Accents retires, formes juridiques
+    supprimees, tout colle sans espaces.
+
+    LIMITE ASSUMEE : « A.P. Moller » et « AP Moller » ne se reduisent pas a la
+    meme cle. L'heuristique attrape les cas qui comptent — les geantes
+    americaines cotees en secondaire sur Xetra, Milan et Londres, dont le nom
+    est ecrit a l'identique — et rate les abreviations. Les quasi-doublons
+    sont SIGNALES plutot que resolus en silence : un faux appariement
+    supprimerait une vraie societe de l'univers."""
+    n = unicodedata.normalize("NFKD", (nom or "").lower().translate(TRANSLIT))
+    n = "".join(c for c in n if not unicodedata.combining(c))
+    n = n.replace("'", "").replace("\u2019", "")   # l'oreal -> loreal
+    n = re.sub(r"[^\w\s]", " ", n)
+    n = FORMES.sub(" ", n)
+    mots = [m for m in n.split() if len(m) > 1]
+    return "".join(mots)
+
+
+def cap_en_nombre(txt):
+    """« 3.45T », « 123.45B », « 987.6M » -> nombre."""
+    if not txt:
+        return None
+    m = re.match(r"^[^\d\-]*(-?[\d.,]+)\s*([TBMK])?", txt.strip(), re.I)
+    if not m:
+        return None
+    try:
+        v = float(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    return v * {"T": 1e12, "B": 1e9, "M": 1e6, "K": 1e3}.get(
+        (m.group(2) or "").upper(), 1)
+
+
+def decouvrir_chemins(s_debug=False):
+    """Lit la page d'index au lieu de deviner les chemins : la v1 devinait et
+    rendait cinq 404, dont l'Espagne et la Suede."""
+    try:
+        html = lire(INDEX)
+    except Exception as e:
+        print(f"  index illisible ({type(e).__name__}) — repli sur les chemins connus")
+        return {}
+    liens = set(re.findall(r'/list/([a-z0-9\-]+)/', html))
+    print(f"  {len(liens)} chemins publies sur la page d'index")
+    trouves = {}
+    for code, (_, _, _, motifs) in PLACES.items():
+        for m in motifs:
+            exact = [l for l in liens if l == m]
+            approx = [l for l in liens if m in l]
+            if exact or approx:
+                trouves[code] = (exact or sorted(approx, key=len))[0]
+                break
+    manquants = [c for c in PLACES if c not in trouves]
+    if manquants:
+        print(f"  places non trouvees sur l'index : {manquants}")
+    return trouves
+
+
 def extraire(html):
-    """Trois strategies, de la plus fiable a la plus grossiere.
-    Rend (lignes, nom_de_la_strategie). Une strategie qui rend peu de lignes
-    n'est pas validee pour autant : le nombre est publie, c'est au lecteur de
-    juger s'il correspond a la place."""
-
-    # A. JSON embarque — le plus sur quand il existe : pas d'ambiguite de
-    #    colonnes, les champs sont nommes.
-    for motif in (r'"data"\s*:\s*(\[\{.*?\}\])\s*[,\}]',
-                  r'__NEXT_DATA__[^>]*>(\{.*?\})</script>'):
-        m = re.search(motif, html, re.S)
-        if not m:
-            continue
-        try:
-            brut = json.loads(m.group(1))
-        except json.JSONDecodeError:
-            continue
-        lignes = brut if isinstance(brut, list) else None
-        if lignes and isinstance(lignes[0], dict):
-            cles = set(lignes[0])
-            if {"s"} & cles or {"symbol"} & cles:
-                out = []
-                for l in lignes:
-                    sym = l.get("s") or l.get("symbol")
-                    if not sym:
-                        continue
-                    out.append({"sym": str(sym).upper(),
-                                "nom": l.get("n") or l.get("name") or "",
-                                "cap": l.get("marketCap") or l.get("mc")})
-                if out:
-                    return out, "json embarque"
-
-    # B. Tableau HTML classique.
-    lignes, bloc = [], re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.S)
-    for tr in bloc:
-        cells = [re.sub(r'<[^>]+>', ' ', c).strip()
-                 for c in re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', tr, re.S)]
+    """Tableau StockAnalysis : No. | Symbol | Company Name | Market Cap | ..."""
+    lignes = []
+    for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S):
+        cells = [re.sub(r"<[^>]+>", " ", c).strip()
+                 for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, re.S)]
         if len(cells) < 3:
             continue
-        sym = cells[1] if re.fullmatch(r'[A-Z0-9.\-]{1,10}', cells[1] or '') else (
-              cells[0] if re.fullmatch(r'[A-Z0-9.\-]{1,10}', cells[0] or '') else None)
-        if sym:
-            lignes.append({"sym": sym.upper(), "nom": " ".join(cells[2:3]), "cap": None})
-    if lignes:
-        return lignes, "tableau HTML"
-
-    # C. Liens de cotation — grossier mais revele si la page a bien ete servie.
-    syms = re.findall(r'/quote/[a-z]+/([A-Z0-9.\-]{1,10})/', html)
-    if syms:
-        vus, out = set(), []
-        for s in syms:
-            if s not in vus:
-                vus.add(s)
-                out.append({"sym": s, "nom": "", "cap": None})
-        return out, "liens de cotation"
-
-    return [], "AUCUNE"
+        i_sym = next((i for i, c in enumerate(cells[:3])
+                      if re.fullmatch(r"[A-Z0-9.\-]{1,12}", c or "")), None)
+        if i_sym is None:
+            continue
+        nom = next((c for c in cells[i_sym + 1:i_sym + 3]
+                    if c and not re.fullmatch(r"[\d.,%\-+$€]+[TBMK]?", c)), "")
+        cap = next((cap_en_nombre(c) for c in cells[i_sym + 1:]
+                    if cap_en_nombre(c) and cap_en_nombre(c) > 1e6), None)
+        lignes.append({"sym": cells[i_sym].upper(), "nom": nom, "cap": cap})
+    return lignes
 
 
-def vers_yahoo(sym, suffixe):
-    """Convention inverse de celle du worker : StockAnalysis ecrit le symbole
-    avec un point la ou Yahoo met un tiret."""
-    return sym.replace(".", "-") + suffixe
+def charger_sec():
+    """Noms de l'univers SEC. LECTURE SEULE — aucune ecriture, donc utilisable
+    quand le quota d'ecriture est epuise."""
+    a, b, t = (os.environ.get(k) for k in ("CF_ACCOUNT", "CF_DB", "CF_TOKEN"))
+    if not all((a, b, t)):
+        print("  variables Cloudflare absentes — detection SEC desactivee")
+        return {}
+    import urllib.request as u
+    noms, page = {}, 0
+    while True:
+        req = u.Request(
+            f"https://api.cloudflare.com/client/v4/accounts/{a}/d1/database/{b}/query",
+            data=json.dumps({"sql": "SELECT ticker, nom FROM societe WHERE cik IS NOT NULL "
+                                    "ORDER BY ticker LIMIT 5000 OFFSET ?",
+                             "params": [page * 5000]}).encode(),
+            headers={"Authorization": f"Bearer {t}", "Content-Type": "application/json"})
+        try:
+            j = json.loads(u.urlopen(req, timeout=60).read())
+        except Exception as e:
+            print(f"  lecture D1 impossible ({type(e).__name__})")
+            return noms
+        r = j.get("result", [{}])[0].get("results", [])
+        if not r:
+            break
+        for l in r:
+            n = normaliser(l.get("nom"))
+            if n:
+                noms[n] = l["ticker"]
+        page += 1
+    print(f"  {len(noms)} noms de deposants SEC charges pour la detection")
+    return noms
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--places", default="", help="codes separes par des virgules")
-    ap.add_argument("--verifier", type=int, default=0,
-                    help="nombre d'URL a controler par place")
-    ap.add_argument("--cap-min", type=float, default=CAP_MIN)
+    ap.add_argument("--places", default="")
+    ap.add_argument("--cap-min", type=float, default=2e9)
+    ap.add_argument("--d1", action="store_true",
+                    help="lit l'univers SEC pour detecter les cotations secondaires")
     a = ap.parse_args()
 
     cibles = [p.strip() for p in a.places.split(",") if p.strip()] or list(PLACES)
-    inconnues = [p for p in cibles if p not in PLACES]
-    if inconnues:
-        print(f"places inconnues : {inconnues}")
-        sys.exit(1)
+    print("EXPLORATION v2 — aucune ecriture\n")
 
-    print("EXPLORATION — aucune ecriture, aucun secret Cloudflare requis\n")
-    total = pea = 0
-    resume = []
+    print("[decouverte des chemins]")
+    chemins = decouvrir_chemins()
 
+    print("\n[univers SEC]")
+    sec = charger_sec() if a.d1 else {}
+
+    print("\n[places]")
+    vus, resume = {}, []
     for code in cibles:
-        chemin, suffixe, pays, elig = PLACES[code]
-        url = f"https://stockanalysis.com/list/{chemin}/"
+        if code not in PLACES:
+            continue
+        suffixe, pays, elig, _ = PLACES[code]
+        chemin = chemins.get(code)
+        if not chemin:
+            print(f"{code:5} {pays}  chemin introuvable")
+            resume.append((code, pays, 0, 0, 0, "chemin introuvable"))
+            continue
         try:
-            html = lire(url)
-        except urllib.error.HTTPError as e:
-            print(f"{code:5} {pays}  HTTP {e.code} — chemin probablement faux : {chemin}")
-            resume.append((code, pays, 0, "HTTP " + str(e.code)))
-            continue
-        except (urllib.error.URLError, TimeoutError) as e:
-            print(f"{code:5} {pays}  reseau : {type(e).__name__}")
-            resume.append((code, pays, 0, "reseau"))
+            html = lire(f"https://stockanalysis.com/list/{chemin}/")
+        except Exception as e:
+            print(f"{code:5} {pays}  {type(e).__name__} sur /{chemin}/")
+            resume.append((code, pays, 0, 0, 0, "erreur"))
             continue
 
-        lignes, strategie = extraire(html)
-        avec_cap = [l for l in lignes if isinstance(l.get("cap"), (int, float))]
-        retenues = [l for l in avec_cap if l["cap"] >= a.cap_min] if avec_cap else lignes
+        lignes = extraire(html)
+        avec_cap = sum(1 for l in lignes if l["cap"])
+        secondaires = doublons = retenues = 0
+        gardees = []
+        for l in lignes:
+            if a.cap_min and l["cap"] and l["cap"] < a.cap_min:
+                continue
+            n = normaliser(l["nom"])
+            if not n:
+                continue
+            if n in sec:
+                secondaires += 1          # cotation secondaire d'un deposant SEC
+                continue
+            if n in vus:
+                doublons += 1             # deja vue sur une autre place europeenne
+                continue
+            vus[n] = (code, l["sym"])
+            gardees.append(l)
+            retenues += 1
 
-        print(f"{code:5} {pays}  {len(lignes):5} symboles  ({strategie})"
-              f"{f' · {len(retenues)} au-dessus du seuil' if avec_cap else ' · capitalisation non servie'}"
+        tronque = " TRONQUE" if len(lignes) >= 499 else ""
+        print(f"{code:5} {pays}  {len(lignes):4} lues{tronque} · {avec_cap} avec capi · "
+              f"{secondaires} secondaires · {doublons} doublons · {retenues} retenues"
               f"{'  [PEA]' if elig else ''}")
-        for l in retenues[:3]:
-            y = vers_yahoo(l["sym"], suffixe)
-            cap = f"{l['cap'] / 1e9:.1f} Md" if isinstance(l.get("cap"), (int, float)) else "n.c."
-            print(f"        {l['sym']:8} -> {y:12} {cap:>10}  {(l['nom'] or '')[:34]}")
-        if not lignes:
-            print(f"        extrait du HTML servi : {re.sub(r'<[^>]+>', ' ', html[:200])[:150]}")
-
-        total += len(retenues)
-        if elig:
-            pea += len(retenues)
-        resume.append((code, pays, len(retenues), strategie))
-
-        # Controle anti-homonymie, repris du worker : une URL derivee n'est
-        # acceptable que si la page servie porte le symbole attendu.
-        if a.verifier and retenues:
-            ok = faux = 0
-            for l in retenues[:a.verifier]:
-                u = f"https://stockanalysis.com/quote/{code}/{l['sym']}/"
-                try:
-                    p = lire(u, timeout=25)
-                    titre = re.search(r'<title>(.*?)</title>', p, re.S)
-                    t = (titre.group(1) if titre else "")
-                    if l["sym"].split(".")[0] in t.upper():
-                        ok += 1
-                    else:
-                        faux += 1
-                        print(f"        URL NON VERIFIEE : {l['sym']} -> titre « {t[:60]} »")
-                except Exception:
-                    faux += 1
-                time.sleep(0.4)
-            print(f"        controle : {ok} verifiees, {faux} rejetees")
+        for l in gardees[:3]:
+            cap = f"{l['cap'] / 1e9:.1f} Md" if l["cap"] else "n.c."
+            print(f"        {l['sym']:9} -> {l['sym'].replace('.', '-') + suffixe:14}"
+                  f" {cap:>9}  {(l['nom'] or '')[:32]}")
+        resume.append((code, pays, len(lignes), secondaires, retenues,
+                       "tronque" if tronque else "complet"))
         time.sleep(0.6)
 
+    print("\n[quasi-doublons — a trancher a la main]")
+    cles = sorted(vus)
+    signales = 0
+    for i, k in enumerate(cles):
+        for k2 in cles[i + 1:]:
+            if not k2.startswith(k[:10]) or k == k2:
+                continue
+            if len(k) >= 10 and (k in k2 or k2 in k):
+                print(f"  {vus[k][0]}:{vus[k][1]:9} « {k[:28]} »   ~   "
+                      f"{vus[k2][0]}:{vus[k2][1]:9} « {k2[:28]} »")
+                signales += 1
+            break
+    if not signales:
+        print("  aucun")
+    else:
+        print(f"  {signales} paires — la normalisation ne les tranche pas, elle les montre")
+
     print("\n--- SYNTHESE ---")
-    for code, pays, n, strat in resume:
-        print(f"  {code:5} {pays:3} {n:5}  {strat}")
-    print(f"\n  univers international retenu : {total}")
-    print(f"  dont places de la zone PEA    : {pea}")
-    print("\n  Rappel : la place de cotation ne fait PAS l'eligibilite PEA —")
-    print("  seul le siege social en UE/EEE la donne, et la liste du courtier")
-    print("  fait foi. Le chiffre ci-dessus est un plafond, pas un resultat.")
+    tot = pea = sec_tot = 0
+    for code, pays, lues, secondaires, retenues, etat in resume:
+        print(f"  {code:5} {pays:3} lues {lues:4}  secondaires {secondaires:4}  "
+              f"retenues {retenues:4}  {etat}")
+        tot += retenues
+        sec_tot += secondaires
+        if PLACES[code][2]:
+            pea += retenues
+    print(f"\n  univers retenu apres nettoyage : {tot}")
+    print(f"  dont places de la zone PEA     : {pea}")
+    print(f"  cotations secondaires ecartees : {sec_tot}")
+    if not sec:
+        print("\n  ATTENTION : detection des cotations secondaires DESACTIVEE.")
+        print("  Relancer avec --d1 et les secrets Cloudflare : sans elle, Apple,")
+        print("  NVIDIA et Alphabet entrent dans l'univers europeen par Xetra,")
+        print("  Milan et Londres.")
 
 
 if __name__ == "__main__":
