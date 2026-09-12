@@ -161,7 +161,7 @@ def code_pays(valeur):
 # --------------------------------------------------------------------------
 
 def main():
-    print(f"Run {RUN_TS}")
+    print(f"incr2_vaneck v3 — Run {RUN_TS}")
     print("Lecture des holdings VanEck :")
 
     par_ticker = {}
@@ -219,8 +219,8 @@ def main():
         rangs.append([t, e["bbg"], e["nom"], cp, place, e["secteur"],
                       elig, src, ",".join(e["etf"]), RUN_TS])
 
-    # Ecriture par lots. 10 colonnes x 60 lignes = 600 variables liees,
-    # sous la limite SQLite de 999.
+    # Ecriture ligne par ligne : 10 variables liees par requete. D1 plafonne
+    # a 100, et un lot qui depasse fait echouer le run entier.
     COLS = ("ticker, ticker_bbg, nom, pays_siege, place, secteur, "
             "eligible_pea, source_eligibilite, vaneck, maj")
     MAJ = ("nom=excluded.nom, pays_siege=excluded.pays_siege, "
@@ -228,15 +228,14 @@ def main():
            "eligible_pea=excluded.eligible_pea, "
            "source_eligibilite=excluded.source_eligibilite, "
            "vaneck=excluded.vaneck, vaneck_sorti_le=NULL, maj=excluded.maj")
+    SQL = (f"INSERT INTO societe ({COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+           f"ON CONFLICT(ticker) DO UPDATE SET {MAJ}")
     ecrites = 0
-    for i in range(0, len(rangs), 60):
-        lot = rangs[i:i + 60]
-        valeurs = ", ".join(["(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"] * len(lot))
-        plats = [v for ligne in lot for v in ligne]
-        d1(f"INSERT INTO societe ({COLS}) VALUES {valeurs} "
-           f"ON CONFLICT(ticker) DO UPDATE SET {MAJ}", plats)
-        ecrites += len(lot)
-        print(f"  ecrit {ecrites}/{len(rangs)}")
+    for ligne in rangs:
+        d1(SQL, ligne)
+        ecrites += 1
+        if ecrites % 50 == 0 or ecrites == len(rangs):
+            print(f"  ecrit {ecrites}/{len(rangs)}")
 
     # Sorties d'indice : journalisees, jamais effacees.
     res = d1("UPDATE societe SET vaneck_sorti_le = ? "
