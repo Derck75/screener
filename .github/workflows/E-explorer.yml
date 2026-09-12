@@ -3,13 +3,13 @@ on:
   workflow_dispatch:
     inputs:
       places:
-        description: 'Codes de places, vides = toutes (epa, etr, tyo, ...)'
+        description: 'Codes de places, vide = toutes (epa, etr, tyo, ...)'
         required: false
         default: ''
-      verifier:
-        description: 'Nombre d URL a controler par place (0 = aucun)'
+      cap_min:
+        description: 'Capitalisation minimale en devise locale'
         required: false
-        default: '3'
+        default: '2000000000'
 
 jobs:
   explorer:
@@ -21,4 +21,11 @@ jobs:
         with:
           python-version: '3.12'
       - name: Exploration univers international
-        run: python src/univers_intl.py --places "${{ inputs.places }}" --verifier ${{ inputs.verifier || 3 }}
+        env:
+          CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: >
+          python src/univers_intl.py --d1
+          --places "${{ inputs.places }}"
+          --cap-min ${{ inputs.cap_min || 2000000000 }}
