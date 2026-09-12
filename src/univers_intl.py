@@ -118,7 +118,12 @@ def normaliser(nom):
     supprimerait une vraie societe de l'univers."""
     # Entites HTML decodees AVANT tout : « &amp; » devenait « amp », et
     # « JPMorgan Chase & Co » ne rejoignait jamais son homonyme SEC.
-    n = _html.unescape(nom or "")
+    # EDGAR suffixe ses raisons sociales par un code d'Etat ou une mention de
+    # depot : « COSTCO WHOLESALE CORP /NEW », « WELLS FARGO & CO /MN/ ». Sans
+    # ce nettoyage, ces societes echappent a la detection des cotations
+    # secondaires et reviennent en Europe par Xetra ou Vienne.
+    n = re.sub(r"\s*/[A-Z]{2,4}/?\s*$", " ", (nom or ""))
+    n = _html.unescape(n)
     n = unicodedata.normalize("NFKD", n.lower().translate(TRANSLIT))
     n = "".join(c for c in n if not unicodedata.combining(c))
     n = n.replace("'", "").replace("\u2019", "")   # l'oreal -> loreal
