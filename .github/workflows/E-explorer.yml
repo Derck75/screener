@@ -1,0 +1,24 @@
+name: E explorer
+on:
+  workflow_dispatch:
+    inputs:
+      places:
+        description: 'Codes de places, vides = toutes (epa, etr, tyo, ...)'
+        required: false
+        default: ''
+      verifier:
+        description: 'Nombre d URL a controler par place (0 = aucun)'
+        required: false
+        default: '3'
+
+jobs:
+  explorer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Exploration univers international
+        run: python src/univers_intl.py --places "${{ inputs.places }}" --verifier ${{ inputs.verifier || 3 }}
