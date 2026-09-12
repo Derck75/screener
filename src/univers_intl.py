@@ -23,6 +23,7 @@ doit tourner meme quand le quota d'ecriture est epuise.
 """
 
 import argparse
+import html as _html
 import json
 import os
 import re
@@ -41,7 +42,8 @@ INDEX = "https://stockanalysis.com/list/"
 # Ces taux servent a CLASSER par taille, jamais a valoriser — un ecart de 10 %
 # ne change aucune decision ici, et le cours reel vient de Yahoo plus tard.
 EN_EUR = {"EUR": 1.0, "SEK": 0.090, "NOK": 0.085, "DKK": 0.134,
-          "CHF": 1.07, "GBP": 1.17, "JPY": 0.0058}
+          "CHF": 1.07, "GBP": 1.17, "JPY": 0.0058, "PLN": 0.235,
+          "CZK": 0.040, "HUF": 0.0026, "ISK": 0.0068}
 
 # Bandes de taille, en euros. Elles ne filtrent pas : elles ETIQUETTENT, pour
 # que la couverture des donnees se mesure bande par bande. C'est ce qui dira
@@ -53,27 +55,43 @@ BANDES = [(200e9, "mega"), (10e9, "large"), (2e9, "mid"),
 # recherche). L'eligibilite PEA tient au SIEGE SOCIAL en UE/EEE : la place
 # n'est qu'une presomption, a confirmer societe par societe.
 PLACES = {
+    # Zone PEA — siege social en UE/EEE. Les huit dernieres viennent de la
+    # page d'index : elles manquaient, et chacune peut porter des candidates.
     "epa": (".PA", "FR", True,  "EUR", ["euronext-paris"]),
     "ams": (".AS", "NL", True,  "EUR", ["euronext-amsterdam"]),
     "ebr": (".BR", "BE", True,  "EUR", ["euronext-brussels"]),
     "els": (".LS", "PT", True,  "EUR", ["euronext-lisbon"]),
-    "etr": (".DE", "DE", True,  "EUR", ["deutsche-boerse-xetra", "frankfurt-stock-exchange"]),
-    "mil": (".MI", "IT", True,  "EUR", ["borsa-italiana", "italian"]),
-    "bme": (".MC", "ES", True,  "EUR", ["madrid"]),
-    "sto": (".ST", "SE", True,  "SEK", ["stockholm", "nasdaq-stockholm"]),
-    "cph": (".CO", "DK", True,  "DKK", ["copenhagen"]),
-    "hel": (".HE", "FI", True,  "EUR", ["helsinki"]),
-    "osl": (".OL", "NO", True,  "NOK", ["oslo"]),
+    "dub": (".IR", "IE", True,  "EUR", ["euronext-dublin"]),
+    "etr": (".DE", "DE", True,  "EUR", ["deutsche-boerse-xetra"]),
+    "mil": (".MI", "IT", True,  "EUR", ["borsa-italiana"]),
+    "bme": (".MC", "ES", True,  "EUR", ["madrid-stock-exchange"]),
+    "vie": (".VI", "AT", True,  "EUR", ["vienna-stock-exchange"]),
+    "ath": (".AT", "GR", True,  "EUR", ["athens-stock-exchange"]),
+    "sto": (".ST", "SE", True,  "SEK", ["nasdaq-stockholm"]),
+    "cph": (".CO", "DK", True,  "DKK", ["copenhagen-stock-exchange"]),
+    "hel": (".HE", "FI", True,  "EUR", ["nasdaq-helsinki"]),
+    "osl": (".OL", "NO", True,  "NOK", ["oslo-bors"]),
+    "ice": (".IC", "IS", True,  "ISK", ["nasdaq-iceland"]),
+    "war": (".WA", "PL", True,  "PLN", ["warsaw-stock-exchange"]),
+    "pra": (".PR", "CZ", True,  "CZK", ["prague-stock-exchange"]),
+    "bud": (".BD", "HU", True,  "HUF", ["budapest-stock-exchange"]),
+    # Hors PEA — Brexit, Suisse hors EEE, Japon.
     "lon": (".L",  "GB", False, "GBP", ["london-stock-exchange"]),
-    "swx": (".SW", "CH", False, "CHF", ["six-swiss", "swiss"]),
+    "swx": (".SW", "CH", False, "CHF", ["six-swiss-exchange"]),
     "tyo": (".T",  "JP", False, "JPY", ["tokyo-stock-exchange"]),
 }
+# ECARTEES VOLONTAIREMENT : frankfurt, dusseldorf, hamburg, munich, stuttgart
+# dupliquent Xetra sur les memes societes ; london-stock-exchange-aim et
+# spotlight-stock-market sont des marches de croissance sans comptes
+# exploitables ; les places non-UE hors Japon sortent du perimetre.
+
 
 # Formes juridiques retirees avant comparaison : « Apple Inc. » et « Apple
 # Inc » doivent se reconnaitre, sinon le dedoublonnage ne sert a rien.
 FORMES = re.compile(
     r"\b(inc|incorporated|corp|corporation|co|company|ltd|limited|plc|llc|lp|"
     r"sa|s\.a|nv|n\.v|ag|se|spa|s\.p\.a|as|a\.s|asa|oyj|ab|aktiengesellschaft|"
+    r"and|und|et|amp|publ|sab|de|cv|"
     r"holding|holdings|group|groupe|the|sgps|kgaa|bv|b\.v|adr|class|cl)\b", re.I)
 
 
@@ -98,7 +116,10 @@ def normaliser(nom):
     est ecrit a l'identique — et rate les abreviations. Les quasi-doublons
     sont SIGNALES plutot que resolus en silence : un faux appariement
     supprimerait une vraie societe de l'univers."""
-    n = unicodedata.normalize("NFKD", (nom or "").lower().translate(TRANSLIT))
+    # Entites HTML decodees AVANT tout : « &amp; » devenait « amp », et
+    # « JPMorgan Chase & Co » ne rejoignait jamais son homonyme SEC.
+    n = _html.unescape(nom or "")
+    n = unicodedata.normalize("NFKD", n.lower().translate(TRANSLIT))
     n = "".join(c for c in n if not unicodedata.combining(c))
     n = n.replace("'", "").replace("\u2019", "")   # l'oreal -> loreal
     n = re.sub(r"[^\w\s]", " ", n)
@@ -135,10 +156,12 @@ def decouvrir_chemins(s_debug=False):
     trouves = {}
     for code, (_, _, _, _, motifs) in PLACES.items():
         for m in motifs:
-            exact = [l for l in liens if l == m]
+            if m in liens:
+                trouves[code] = m
+                break
             approx = [l for l in liens if m in l]
-            if exact or approx:
-                trouves[code] = (exact or sorted(approx, key=len))[0]
+            if approx:
+                trouves[code] = sorted(approx, key=len)[0]
                 break
     manquants = [c for c in PLACES if c not in trouves]
     if manquants:
