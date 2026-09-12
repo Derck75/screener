@@ -37,6 +37,12 @@ jobs:
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
           SEC_UA: ${{ secrets.SEC_UA }}
         run: python src/incr4_comptes_us.py
+      - name: Increment 5 metriques
+        env:
+          CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: python src/incr5_metriques.py
       - name: Keepalive
         if: always()
         run: |
