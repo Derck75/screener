@@ -43,6 +43,12 @@ jobs:
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: python src/incr5_metriques.py
+      - name: Increment 6 prix
+        env:
+          CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: python src/incr6_prix.py
       - name: Keepalive
         if: always()
         run: |
