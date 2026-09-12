@@ -23,6 +23,13 @@ jobs:
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: python src/incr2_vaneck.py
+      - name: Increment 3 univers US
+        env:
+          CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          SEC_UA: ${{ secrets.SEC_UA }}
+        run: python src/incr3_univers_us.py
       - name: Keepalive
         if: always()
         run: |
