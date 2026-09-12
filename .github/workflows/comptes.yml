@@ -1,0 +1,29 @@
+name: B comptes
+on:
+  schedule:
+    - cron: '23 2 * * 6'
+  workflow_dispatch:
+    inputs:
+      exercices:
+        description: 'Exercices a ingerer, separes par des virgules'
+        required: false
+        default: '2020,2021,2022,2023,2024,2025'
+
+jobs:
+  comptes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - name: Comptes bruts US
+        env:
+          CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          SEC_UA: ${{ secrets.SEC_UA }}
+          EXERCICES: ${{ inputs.exercices || '2020,2021,2022,2023,2024,2025' }}
+        run: python src/incr4_comptes.py
