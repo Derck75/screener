@@ -17,12 +17,12 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install requests
-      - name: Increment 1
+      - name: Increment 2 VanEck
         env:
           CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
-        run: python src/incr1_test.py
+        run: python src/incr2_vaneck.py
       - name: Keepalive
         if: always()
         run: |
