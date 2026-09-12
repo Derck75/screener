@@ -171,6 +171,53 @@ def budget(besoin, table):
     return True
 
 
+def ecrire_differentiel(table, cle, rangs, colonnes, s=None):
+    """N'ecrit que ce qui a CHANGE.
+
+    Les comptes annuels ne bougent que quatre fois par an : reecrire 23 000
+    lignes chaque jour consomme le quota sans rien apporter. En regime de
+    croisiere, cette fonction ecrit quelques dizaines de lignes.
+
+    `rangs` : {cle: {colonne: valeur}}. Comparaison a 6 decimales — au-dela,
+    un bruit d'arrondi ferait passer une ligne pour modifiee.
+    """
+    existant, page = {}, 0
+    cols = ", ".join(colonnes)
+    while True:
+        r = d1(f"SELECT {cle}, {cols} FROM {table} ORDER BY {cle} "
+               f"LIMIT 5000 OFFSET ?", [page * 5000])[0]["results"]
+        if not r:
+            break
+        for l in r:
+            existant[l[cle]] = l
+        page += 1
+
+    def pareil(a, b):
+        for c in colonnes:
+            x, y = a.get(c), b.get(c)
+            if x is None and y is None:
+                continue
+            if x is None or y is None:
+                return False
+            try:
+                if abs(float(x) - float(y)) > 1e-6:
+                    return False
+            except (TypeError, ValueError):
+                if str(x) != str(y):
+                    return False
+        return True
+
+    a_ecrire = {k: v for k, v in rangs.items()
+                if k not in existant or not pareil(existant[k], v)}
+    inchangees = len(rangs) - len(a_ecrire)
+    print(f"  differentiel : {len(a_ecrire)} a ecrire, {inchangees} inchangees, "
+          f"{len(existant)} en base")
+    if s:
+        s.compte("inchangees", inchangees)
+        s.compte("modifiees", len(a_ecrire))
+    return a_ecrire
+
+
 def verifier_schema(table, colonnes):
     """Echoue tout de suite, pas apres dix minutes de calcul."""
     presentes = {l["name"] for l in
