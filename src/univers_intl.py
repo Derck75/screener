@@ -258,6 +258,9 @@ def main():
     ap.add_argument("--places", default="")
     ap.add_argument("--cap-min", type=float, default=300e6,
                     help="seuil EN EUROS, converti depuis la devise de place")
+    ap.add_argument("--ecrire", action="store_true",
+                    help="ECRIT l'univers retenu dans `societe`. Sans ce drapeau, "
+                         "le script explore et n'ecrit rien.")
     ap.add_argument("--lister", action="store_true",
                     help="affiche les chemins publies sur la page d'index et s'arrete")
     ap.add_argument("--d1", action="store_true",
@@ -289,7 +292,7 @@ def main():
     sec = charger_sec() if a.d1 else {}
 
     print("\n[places]")
-    vus, resume, bandes_tot = {}, [], {}
+    vus, resume, bandes_tot, retenues_globales = {}, [], {}, []
     for code in cibles:
         if code not in PLACES:
             continue
@@ -335,7 +338,10 @@ def main():
                 doublons += 1             # deja vue sur une autre place europeenne
                 continue
             vus[n] = (code, l["sym"])
+            l["ticker"] = l["sym"].replace(".", "-") + suffixe
+            l["pays"], l["pea"], l["devise"] = pays, elig, devise
             gardees.append(l)
+            retenues_globales.append(l)
             retenues += 1
 
         tronque = " TRONQUE" if len(lignes) >= 499 else ""
@@ -392,11 +398,107 @@ def main():
     print(f"\n  univers retenu apres nettoyage : {tot}")
     print(f"  dont places de la zone PEA     : {pea}")
     print(f"  cotations secondaires ecartees : {sec_tot}")
+    if a.ecrire:
+        print("\n[ecriture]")
+        # Sans detection des cotations secondaires, Apple et NVIDIA entreraient
+        # dans l'univers europeen par Xetra : on refuse d'ecrire a l'aveugle.
+        if not sec:
+            print("  REFUS : detection des cotations secondaires desactivee.")
+            print("  Relancer avec les secrets Cloudflare avant toute ecriture.")
+            sys.exit(1)
+        ecrire(retenues_globales)
+    else:
+        print("\n  (exploration seule — relancer avec --ecrire pour alimenter `societe`)")
+
     if not sec:
         print("\n  ATTENTION : detection des cotations secondaires DESACTIVEE.")
         print("  Relancer avec --d1 et les secrets Cloudflare : sans elle, Apple,")
         print("  NVIDIA et Alphabet entrent dans l'univers europeen par Xetra,")
         print("  Milan et Londres.")
+
+
+def ecrire(lignes):
+    """Ecrit l'univers international dans `societe`.
+
+    NE TOUCHE PAS aux colonnes des autres sources. `nom`, `secteur` et le CIK
+    viennent de VanEck ou de la SEC quand ils existent : COALESCE les preserve.
+    Une source qui complete ne doit jamais degrader ce qu'une autre a ecrit.
+
+    `eligible_pea` est une PRESOMPTION de place, pas un verdict : seul le siege
+    social en UE/EEE donne l'eligibilite, et la liste du courtier fait foi. La
+    source est inscrite a cote pour que ce soit relisible.
+    """
+    a, b, t = (os.environ.get(k) for k in ("CF_ACCOUNT", "CF_DB", "CF_TOKEN"))
+    if not all((a, b, t)):
+        print("  variables Cloudflare absentes — aucune ecriture")
+        return
+    import urllib.request as u
+    url = f"https://api.cloudflare.com/client/v4/accounts/{a}/d1/database/{b}/query"
+
+    def sql(q, params=None):
+        req = u.Request(url, data=json.dumps({"sql": q, "params": params or []}).encode(),
+                        headers={"Authorization": f"Bearer {t}",
+                                 "Content-Type": "application/json"})
+        try:
+            j = json.loads(u.urlopen(req, timeout=90).read())
+        except Exception as e:
+            print(f"  ECHEC D1 : {type(e).__name__} — {str(e)[:120]}")
+            sys.exit(1)
+        if not j.get("success"):
+            err = json.dumps(j.get("errors"))[:200]
+            if "daily row write limit" in err or "7500" in err:
+                print("  QUOTA D1 EPUISE — reprise a minuit UTC, univers laisse partiel")
+                sys.exit(1)
+            print(f"  ECHEC D1 : {err}")
+            sys.exit(1)
+        return j["result"][0].get("results", [])
+
+    # Budget : `societe` porte 1 index, donc 2 ecritures par ligne.
+    deja = sql("SELECT COALESCE(SUM(lignes_ecrites),0) AS n FROM runs "
+               "WHERE debut >= date('now')")[0]["n"] or 0
+    cout = len(lignes) * 2
+    plafond = int(os.environ.get("PLAFOND_ECRITURES", "70000"))
+    print(f"  budget : {deja} deja ecrites, {cout} prevues, plafond {plafond}")
+    if deja + cout > plafond:
+        print("  BUDGET INSUFFISANT — rien n'a ete ecrit, reprendre apres minuit UTC")
+        sys.exit(1)
+
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    MAJ = ("nom=COALESCE(societe.nom, excluded.nom), "
+           "place=COALESCE(societe.place, excluded.place), "
+           "devise=COALESCE(societe.devise, excluded.devise), "
+           "pays_siege=COALESCE(societe.pays_siege, excluded.pays_siege), "
+           "capitalisation=excluded.capitalisation, "
+           "eligible_pea=COALESCE(societe.eligible_pea, excluded.eligible_pea), "
+           "source_eligibilite=COALESCE(societe.source_eligibilite, excluded.source_eligibilite), "
+           "origine=CASE WHEN origine IS NULL THEN 'intl' "
+           "WHEN instr(origine,'intl')>0 THEN origine ELSE origine||',intl' END, "
+           "maj=excluded.maj")
+    n = 0
+    for i in range(0, len(lignes), 8):   # 9 colonnes x 8 lignes = 72 variables
+        lot = lignes[i:i + 8]
+        vals, params = [], []
+        for l in lot:
+            vals.append("(?, ?, ?, ?, ?, ?, ?, 'intl', ?)")
+            params += [l["ticker"], l["nom"][:120], l["pays"], l["ticker"].split(".")[-1],
+                       l["devise"], l.get("cap_eur"), 1 if l["pea"] else 0,
+                       ts]
+        sql("INSERT INTO societe (ticker, nom, pays_siege, place, devise, "
+            "capitalisation, eligible_pea, origine, maj) VALUES "
+            + ", ".join(vals) + " ON CONFLICT(ticker) DO UPDATE SET " + MAJ, params)
+        n += len(lot)
+        if n % 400 == 0 or n == len(lignes):
+            print(f"  ecrit {n}/{len(lignes)}")
+
+    sql("UPDATE societe SET source_eligibilite = ? WHERE origine LIKE '%intl%' "
+        "AND source_eligibilite IS NULL",
+        ["presomption de place (StockAnalysis) — a confirmer contre la liste du courtier"])
+    sql("INSERT INTO runs (debut, fin, etape, statut, lignes_ecrites, canari, message, detail)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [ts, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "incr7_univers_intl",
+         "OK", n, "VERT", f"{n} societes internationales",
+         json.dumps({"ecrites": n})])
+    print(f"  {n} societes ecrites dans `societe`")
 
 
 if __name__ == "__main__":
