@@ -30,6 +30,7 @@ jobs:
           python-version: '3.12'
       - name: Exploration univers international
         env:
+          PYTHONUNBUFFERED: "1"
           CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
