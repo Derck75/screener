@@ -1,41 +1,17 @@
-name: E explorer
+name: G lister chemins
 on:
   workflow_dispatch:
-    inputs:
-      mode:
-        description: 'Mode'
-        required: false
-        default: explorer
-        type: choice
-        options:
-          - explorer
-          - lister
-      places:
-        description: 'Codes de places, vide = toutes'
-        required: false
-        default: ''
-      cap_min:
-        description: 'Capitalisation minimale EN EUROS (300000000 = 300 M)'
-        required: false
-        default: '300000000'
 
 jobs:
-  explorer:
+  lister:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Exploration univers international
+      - name: Chemins publies par StockAnalysis
         env:
           PYTHONUNBUFFERED: "1"
-          CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
-          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
-          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
-        run: >
-          python src/univers_intl.py
-          ${{ inputs.mode == 'lister' && '--lister' || '--d1' }}
-          --places "${{ inputs.places }}"
-          --cap-min ${{ inputs.cap_min || 300000000 }}
+        run: python src/univers_intl.py --lister
