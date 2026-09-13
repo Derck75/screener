@@ -1,0 +1,34 @@
+name: H univers international
+on:
+  workflow_dispatch:
+    inputs:
+      ecrire:
+        description: 'Ecrire dans la base ? Sinon exploration seule'
+        required: false
+        default: 'non'
+        type: choice
+        options: [non, oui]
+      cap_min:
+        description: 'Capitalisation minimale EN EUROS'
+        required: false
+        default: '300000000'
+
+jobs:
+  univers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Univers international
+        env:
+          CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          PYTHONUNBUFFERED: "1"
+        run: >
+          python src/univers_intl.py --d1
+          ${{ inputs.ecrire == 'oui' && '--ecrire' || '' }}
+          --cap-min ${{ inputs.cap_min || 300000000 }}
