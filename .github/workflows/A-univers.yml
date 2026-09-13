@@ -19,6 +19,7 @@ jobs:
       - run: pip install requests
       - name: VanEck
         env:
+          PYTHONUNBUFFERED: "1"
           CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
@@ -45,6 +46,7 @@ jobs:
       - run: pip install requests
       - name: Univers SEC
         env:
+          PYTHONUNBUFFERED: "1"
           CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
