@@ -3,27 +3,33 @@ on:
   schedule:
     - cron: '23 2 * * 6'
   workflow_dispatch:
-    inputs:
-      exercices:
-        description: 'Exercices a ingerer, separes par des virgules'
-        required: false
-        default: '2020,2021,2022,2023,2024,2025'
 
 jobs:
   comptes:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 90
+    strategy:
+      # Un job par exercice. Deux a la fois seulement : la SEC plafonne a
+      # 10 requetes par seconde tous clients confondus, et trois jobs
+      # paralleles la depasseraient.
+      max-parallel: 2
+      fail-fast: false
+      matrix:
+        exercice: [2020, 2021, 2022, 2023, 2024, 2025]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: pip install requests
-      - name: Comptes bruts US
+      - name: Comptes bruts US ${{ matrix.exercice }}
         env:
           CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
           SEC_UA: ${{ secrets.SEC_UA }}
-          EXERCICES: ${{ inputs.exercices || '2020,2021,2022,2023,2024,2025' }}
+          EXERCICES: ${{ matrix.exercice }}
+          # Sans cela, Python bufferise et le log reste vide jusqu'a la fin :
+          # un run de trois heures ne montrait aucune progression.
+          PYTHONUNBUFFERED: '1'
         run: python src/incr4_comptes.py
