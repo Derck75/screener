@@ -222,6 +222,9 @@ async function main() {
     console.log(`  budget : ${deja} deja ecrites, ${cout} prevues, plafond ${PLAFOND}`);
     if (deja + cout > PLAFOND)
       await fatal(`BUDGET INSUFFISANT — ${deja} + ${cout} depasse ${PLAFOND}`);
+    // Intention posee AVANT d'ecrire : un run coupe laisse sinon ses
+    // ecritures invisibles au compteur du lendemain.
+    await journal("EN COURS", cout, "—", `intention de ${cout} ecritures`);
 
     const liste = "ticker, " + COLONNES.join(", ");
     for (let i = 0; i < aEcrire.length; i += 100) {
