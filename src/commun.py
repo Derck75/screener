@@ -165,6 +165,13 @@ def budget(besoin, table):
     cout = besoin * (1 + INDEX.get(table, 0))
     print(f"budget : {deja} deja ecrites aujourd'hui, "
           f"{cout} prevues sur {table} (index compris), plafond {PLAFOND_JOUR}")
+    # INTENTION JOURNALISEE AVANT L'ECRITURE. Un run coupe en cours de route
+    # n'inscrit jamais son resultat : ses ecritures deviennent invisibles au
+    # compteur, qui sous-estime alors le reel et laisse repartir un run
+    # condamne. Une ligne posee d'avance survit a l'interruption.
+    if deja + cout <= PLAFOND_JOUR:
+        journal("EN COURS", _sonde.etape if _sonde else table, cout, "—",
+                f"intention de {cout} ecritures sur {table}")
     if deja + cout > PLAFOND_JOUR:
         _fatal(f"BUDGET INSUFFISANT — {deja} + {cout} depasse {PLAFOND_JOUR}. "
                f"Etape non lancee, base laissee intacte. Reprendre apres minuit UTC.")
