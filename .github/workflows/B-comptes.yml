@@ -3,19 +3,28 @@ on:
   schedule:
     - cron: '23 2 * * 6'
   workflow_dispatch:
+    inputs:
+      exercices:
+        description: 'Exercices a ingerer. Vide = fenetre longue 2014-2025'
+        required: false
+        default: ''
+
+concurrency:
+  group: screener-ecriture
+  cancel-in-progress: false
 
 jobs:
   comptes:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
-      # Un job par exercice. Deux a la fois seulement : la SEC plafonne a
-      # 10 requetes par seconde tous clients confondus, et trois jobs
-      # paralleles la depasseraient.
+      # Un job par exercice. Deux a la fois : la SEC plafonne a 10 requetes
+      # par seconde tous clients confondus.
       max-parallel: 2
       fail-fast: false
       matrix:
-        exercice: [2020, 2021, 2022, 2023, 2024, 2025]
+        exercice: [2014, 2015, 2016, 2017, 2018, 2019,
+                   2020, 2021, 2022, 2023, 2024, 2025]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,7 +38,44 @@ jobs:
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
           SEC_UA: ${{ secrets.SEC_UA }}
           EXERCICES: ${{ matrix.exercice }}
-          # Sans cela, Python bufferise et le log reste vide jusqu'a la fin :
-          # un run de trois heures ne montrait aucune progression.
           PYTHONUNBUFFERED: '1'
         run: python src/incr4_comptes.py
+
+  etat:
+    runs-on: ubuntu-latest
+    needs: comptes
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - name: Profondeur obtenue
+        env:
+          CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          PYTHONUNBUFFERED: '1'
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request
+          a, b, t = os.environ["CF_ACCOUNT"], os.environ["CF_DB"], os.environ["CF_TOKEN"]
+          u = f"https://api.cloudflare.com/client/v4/accounts/{a}/d1/database/{b}/query"
+          def q(sql):
+              r = urllib.request.Request(u, data=json.dumps({"sql": sql}).encode(),
+                  headers={"Authorization": f"Bearer {t}", "Content-Type": "application/json"})
+              return json.loads(urllib.request.urlopen(r, timeout=60).read())["result"][0]["results"]
+          print("LIGNES PAR EXERCICE")
+          for l in q("SELECT exercice, COUNT(*) AS n FROM comptes2 GROUP BY exercice ORDER BY exercice"):
+              print(f"  {l['exercice']} : {l['n']}")
+          print("\nPROFONDEUR PAR SOCIETE")
+          for l in q("SELECT n, COUNT(*) AS s FROM (SELECT ticker, COUNT(*) AS n "
+                     "FROM comptes2 GROUP BY ticker) GROUP BY n ORDER BY n"):
+              print(f"  {l['n']:2} exercice(s) : {l['s']} societes")
+          r = q("SELECT COUNT(*) AS n FROM (SELECT ticker FROM comptes2 "
+                "GROUP BY ticker HAVING COUNT(*) >= 10)")[0]["n"]
+          print(f"\n  societes a 10 exercices ou plus : {r}")
+          print("  C'est le seuil du filtre dur : en dessous, aucun verdict ferme")
+          print("  sur la durabilite du moat n'est publiable.")
+          PY
