@@ -558,7 +558,6 @@ def main():
         "ORDER BY m.epv_sur_cours DESC LIMIT 10")[0]["results"]:
         print(f"  {l['ticker']:7} ROIC {round(l['roic_median'] or 0):3} %  "
               f"EPV/cours {round(100 * (l['epv_sur_cours'] or 0)):4} %  "
-              f"EPV/cours {round(100 * (l['epv_sur_cours'] or 0)):3} %  "
               f"moat {l['score_moat']}/{l['score_moat_max']}"
               f"{'  VanEck' if l['vaneck'] else ''}  {(l['nom'] or '')[:28]}")
 
