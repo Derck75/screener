@@ -38,9 +38,11 @@ async function d1(sql, params = []) {
   const j = await r.json().catch(() => null);
   if (!j?.success) {
     const err = JSON.stringify(j?.errors || r.status).slice(0, 300);
-    if (err.includes("daily row write limit") || err.includes("7500"))
+    // 7500 est le code generique de toute erreur SQL : le tester masquait le
+    // vrai message. Seul le libelle du quota fait foi.
+    if (err.includes("daily row write limit"))
       await fatal("QUOTA D1 EPUISE — reprise a minuit UTC, base laissee en etat partiel");
-    await fatal("erreur D1 : " + err);
+    await fatal("erreur D1 (message brut) : " + err);
   }
   return j.result;
 }
