@@ -17,7 +17,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Noms non definis dans les scripts
+
+      - name: Noms non definis dans les scripts Python
         run: cd src && python verif_noms.py
+
+      # `node --check` ne valide QUE la syntaxe : un identifiant utilise mais
+      # jamais defini ne leve qu'a l'execution du chemin qui le contient. Ce
+      # trou couvrait precisement le seul fichier .mjs du projet.
+      # verif_noms_js.mjs n'est pas teste par lui-meme : il contient des
+      # litteraux d'expression reguliere porteurs de backticks, que son propre
+      # analyseur textuel lit comme des gabarits. Limite connue et assumee.
+      - name: Noms non definis dans les scripts JS
+        run: cd src && node verif_noms_js.mjs incr5_metriques.mjs
+
+      # Imprime l'empreinte REELLE de chaque fichier deploye. C'est ce qui
+      # permet de repondre a « est-ce bien la version corrigee qui tourne ? »
+      # en comparant huit caracteres, au lieu d'en debattre.
+      - name: Empreintes des scripts deployes
+        run: cd src && python empreinte.py $(ls *.py *.mjs *.js 2>/dev/null)
+
       - name: Non-regression du noyau
         run: node src/test_noyau.mjs
