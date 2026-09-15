@@ -139,7 +139,32 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tranche", type=int, default=0, help="0 = toutes")
     ap.add_argument("--nb-tranches", type=int, default=1)
+    ap.add_argument("--test-reseau", action="store_true",
+                    help="trois requetes Yahoo, codes HTTP bruts, aucune ecriture")
     a = ap.parse_args()
+    if a.test_reseau:
+        print("TEST RESEAU — aucune ecriture\n")
+        for sym in ("AAPL", "MSFT", "MC.PA"):
+            u = CHART.format(sym=sym)
+            req = urllib.request.Request(u, headers={"User-Agent": UA,
+                                                     "Accept": "application/json"})
+            t0 = time.time()
+            try:
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    corps = r.read(400).decode("utf-8", "replace")
+                print(f"  {sym:7} HTTP {r.status} en {time.time()-t0:.1f}s")
+                print(f"          debut du corps : {corps[:120]}")
+            except urllib.error.HTTPError as e:
+                detail = e.read()[:200].decode("utf-8", "replace")
+                print(f"  {sym:7} HTTP {e.code} en {time.time()-t0:.1f}s — {detail}")
+            except Exception as e:
+                print(f"  {sym:7} {type(e).__name__} en {time.time()-t0:.1f}s — {str(e)[:120]}")
+            time.sleep(1)
+        print("\n429 = debit limite, une pause plus longue suffit.")
+        print("401 ou 403 = acces refuse aux adresses GitHub : il faudra passer")
+        print("par le worker Cloudflare ou par StockAnalysis.")
+        return
+
     print(f"incr6_prix v2 — Run {RUN_TS}"
           + (f" — tranche {a.tranche}/{a.nb_tranches}" if a.tranche else ""))
 
@@ -191,6 +216,12 @@ def main():
     cours_canari = None
 
     for i, t in enumerate(cibles, 1):
+        # Coupe-circuit : si les 8 premieres echouent toutes, la source refuse
+        # l'acces et insister coute une heure pour rien.
+        if i == 9 and not maj:
+            print("  ARRET : 8 premieres cotations en echec — la source refuse")
+            s.erreur("source_refuse", "8/8 en echec")
+            break
         c = chart(t)
         time.sleep(0.25)
         if c is None:
@@ -268,6 +299,7 @@ def main():
         msg = (f"canari rouge : {CANARI_TICKER} = {cours_canari}, "
                f"{len(maj)}/{len(cibles)} cotations")
         print("PANNE : " + msg)
+        s.afficher()
         journal("PANNE", f"incr6_prix_t{a.tranche}", 0, "ROUGE", msg)
         sys.exit(1)
 
