@@ -23,24 +23,17 @@ jobs:
   prix:
     runs-on: ubuntu-latest
     needs: metriques
-    timeout-minutes: 90
-    strategy:
-      # 710 cotations dans un seul job depassaient l'heure allouee. Deux
-      # tranches a la fois seulement : Yahoo repond 429 au-dela.
-      max-parallel: 2
-      fail-fast: false
-      matrix:
-        tranche: [1, 2, 3, 4, 5]
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: pip install requests
-      - name: Etage prix ${{ matrix.tranche }}/5
+      - name: Etage prix
         env:
           CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
           PYTHONUNBUFFERED: "1"
-        run: python src/incr6_prix.py --tranche ${{ matrix.tranche }} --nb-tranches 5
+        run: python src/incr6_prix.py
