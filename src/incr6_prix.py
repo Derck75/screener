@@ -180,63 +180,6 @@ def lire_liste(url, s):
         return None
 
 
-PAGINATIONS = ["?p={n}", "?page={n}", "?r=500&p={n}"]
-PAGES_MAX = 12
-
-
-def pages_liste(chemin, s):
-    """Rend la liste des pages HTML d'une cotation, pagination COMPRISE.
-
-    🔴 DEFAUT CORRIGE ICI. La lecture ne prenait que la premiere page, et
-    StockAnalysis en sert 500 lignes. Deux cotations ont rendu exactement 500
-    — un nombre rond qui n'arrive jamais par hasard sur un marche de 2 800
-    valeurs. Resultat : 1 242 cours pour 710 societes a servir, 409 absentes,
-    et un canari rouge qui avait parfaitement raison.
-
-    LE PARAMETRE DE PAGINATION N'EST PAS SUPPOSE, IL EST DECOUVERT. Trois
-    formes d'URL sont essayees sur la page 2 ; on garde celle qui ramene des
-    symboles NOUVEAUX, et on l'annonce dans le log. Coder en dur une forme non
-    observee reviendrait a remplacer une panne bruyante par une panne muette :
-    la page 2 repondrait 200 en reservant la page 1, et le total paraitrait
-    plausible tout en restant tronque. D'ou le test sur la NOUVEAUTE des
-    symboles, et non sur le code HTTP.
-    """
-    base = f"https://stockanalysis.com/list/{chemin}/"
-    p1 = lire_liste(base, s)
-    if not p1:
-        return []
-    pages, vus = [p1], set(re.findall(r"/stocks/([a-z.\-]+)/", p1, re.I))
-    forme = None
-
-    for cand in PAGINATIONS:
-        essai = lire_liste(base + cand.format(n=2), s)
-        if not essai:
-            continue
-        neufs = set(re.findall(r"/stocks/([a-z.\-]+)/", essai, re.I)) - vus
-        if len(neufs) >= 20:
-            forme, pages, vus = cand, pages + [essai], vus | neufs
-            print(f"  {chemin} : pagination « {cand} » — {len(neufs)} symboles neufs en page 2")
-            break
-
-    if forme is None:
-        print(f"  {chemin} : page unique ({len(vus)} symboles) — aucune pagination detectee")
-        s.compte("liste_page_unique")
-        return pages
-
-    n = 3
-    while n <= PAGES_MAX:
-        h = lire_liste(base + forme.format(n=n), s)
-        if not h:
-            break
-        neufs = set(re.findall(r"/stocks/([a-z.\-]+)/", h, re.I)) - vus
-        if not neufs:
-            break
-        pages.append(h); vus |= neufs; n += 1
-        time.sleep(0.6)
-    print(f"  {chemin} : {len(pages)} page(s), {len(vus)} symboles distincts")
-    return pages
-
-
 def cours_depuis_listes(s):
     """Rend {ticker: (cours, capitalisation)} pour tout le panel americain.
 
@@ -250,10 +193,9 @@ def cours_depuis_listes(s):
     """
     out = {}
     for chemin in LISTES_US:
-        pages = pages_liste(chemin, s)
-        if not pages:
+        html = lire_liste(f"https://stockanalysis.com/list/{chemin}/", s)
+        if not html:
             continue
-        html = "".join(pages)
         ent = [re.sub(r"<[^>]+>", " ", h).strip().lower()
                for h in re.findall(r"<th[^>]*>(.*?)</th>", html, re.S)]
         i_sym = next((i for i, l in enumerate(ent) if "symbol" in l), None)
@@ -337,14 +279,7 @@ def main():
         print("par le worker Cloudflare ou par StockAnalysis.")
         return
 
-    try:
-        import hashlib
-        _b = open(__file__, "rb").read()
-        print(f"empreinte {hashlib.sha256(_b).hexdigest()[:8]} · "
-              f"{_b.count(chr(10).encode()) + 1} lignes")
-    except OSError:
-        print("empreinte indisponible")
-    print(f"incr6_prix v5 — Run {RUN_TS}"
+    print(f"incr6_prix v4 — Run {RUN_TS}"
           + (f" — tranche {a.tranche}/{a.nb_tranches}" if a.tranche else ""))
 
     # ---- diagnostic demande : pourquoi la moitie de l'univers est ecartee ----
@@ -393,30 +328,6 @@ def main():
     s.phase("cotations")
     table = cours_depuis_listes(s)
     print(f"  {len(table)} cours disponibles")
-
-    # ---- REPLI PAR TICKER, POUR CE QUE LES LISTES N'ONT PAS SERVI -----------
-    # La pagination ci-dessus repose sur une forme d'URL decouverte a
-    # l'execution. Le jour ou la source la changera, la decouverte echouera en
-    # silence et la couverture retombera — exactement la panne d'aujourd'hui.
-    # Ce repli la rend NON CRITIQUE : ce qui manque apres les listes est
-    # rattrape un par un chez Yahoo, source deja utilisee ailleurs dans ce
-    # script. Il ne se declenche que sur le manquant, donc il ne coute rien
-    # quand les listes font leur travail.
-    manquants = [t for t in cibles if t not in table]
-    if manquants:
-        print(f"  repli par ticker sur {len(manquants)} manquant(s)")
-        rattrapes = 0
-        for i, t in enumerate(manquants):
-            c = chart(t)
-            if c:
-                table[t] = (c[0], None)   # capitalisation non servie par cette voie
-                rattrapes += 1
-            if i % 25 == 24:
-                time.sleep(1.0)
-            else:
-                time.sleep(0.15)
-        print(f"  {rattrapes} rattrape(s), {len(manquants) - rattrapes} introuvable(s)")
-        s.compte("rattrapes_yahoo", rattrapes)
     maj, refus_epv, echecs = [], 0, 0
     cours_canari = (table.get(CANARI_TICKER) or (None,))[0]
 
@@ -432,8 +343,33 @@ def main():
         if not ans:
             continue
         der = annees[ans[-1]]
+
+        # ---- CONTROLE D'UNITE SUR LE NOMBRE D'ACTIONS ------------------------
+        # Deux sources INDEPENDANTES mesurent la meme grandeur : la
+        # capitalisation publiee par la liste, et le produit cours x actions.
+        # Leur desaccord revele une erreur d'unite sans qu'on ait besoin de
+        # connaitre la bonne unite — c'est le seul controle possible quand la
+        # taxonomie laisse chaque deposant libre de son echelle.
+        # McDonald's ressortait a 17 674 098 % d'EPV sur cours : le champ
+        # `shares` y valait environ 840 au lieu de 720 millions.
         actions = der.get("shares")
+        if actions and capi_liste and cours:
+            implicite = cours * actions
+            rapport = implicite / capi_liste if capi_liste else None
+            # Tolerance large : les rachats et emissions depuis la cloture
+            # deplacent legitimement ce rapport de quelques dizaines de pour
+            # cent. Un facteur 5 n'est jamais une operation sur le capital.
+            if rapport and (rapport > 5 or rapport < 0.2):
+                s.erreur("unite_actions",
+                         f"{t} : cours x actions = {implicite:.3g} contre "
+                         f"capitalisation {capi_liste:.3g} (rapport {rapport:.3g})")
+                s.compte("actions_invalidees")
+                actions = None      # champ invalide, pas societe rejetee
+
+        # Repli : sans nombre d'actions fiable, la capitalisation publiee
+        # permet quand meme l'EPV — elle porte la meme information.
         capi = capi_liste or (cours * actions if actions else None)
+
         fcf_der = (der["cfo"] - abs(der["capex"])) \
             if (der.get("cfo") is not None and der.get("capex") is not None) else None
         fcf_y = (fcf_der / capi) if (fcf_der is not None and capi) else None
@@ -444,15 +380,29 @@ def main():
                 if annees[a].get("tax") is not None
                 and (annees[a].get("pretax") or 0) > 0
                 and 0 <= annees[a]["tax"] / annees[a]["pretax"] <= 0.6]
-        if len(ebits) >= EPV_MIN_EXERCICES and actions:
+        if len(ebits) >= EPV_MIN_EXERCICES and capi:
             ebit_med = st.median(ebits)
             t_med = st.median(taux) if taux else TAUX_IMPOT_DEFAUT
             if ebit_med > 0:
                 capitalise = ebit_med * (1 - t_med) / TAUX_OBSTACLE_EPV
                 dn = (der.get("debt") or 0) - (der.get("cash") or 0)
                 if dn < capitalise:
-                    epv = (capitalise - dn) / actions
-                    epv_sur_cours = epv / cours
+                    # EPV rapportee au COURS = valeur des capitaux propres
+                    # capitalisee, divisee par la capitalisation. Le nombre
+                    # d'actions disparait du calcul : il ne peut plus le
+                    # fausser, et le resultat est identique au rapport par
+                    # action quand les deux sont justes.
+                    epv_capitaux = capitalise - dn
+                    epv_sur_cours = epv_capitaux / capi
+                    epv = epv_capitaux / actions if actions else None
+                    # Garde-fou de vraisemblance : au-dela de 5x le cours, ce
+                    # n'est plus une decote, c'est une donnee fausse.
+                    if epv_sur_cours > 5:
+                        s.erreur("epv_invraisemblable",
+                                 f"{t} : EPV/cours = {epv_sur_cours:.3g}")
+                        s.compte("epv_invalidee")
+                        epv = epv_sur_cours = None
+                        refus_epv += 1
                 else:
                     refus_epv += 1
             else:
@@ -504,21 +454,25 @@ def main():
     print("\nentonnoir :")
     print(f"  qualite (ROIC>=15, spread>0, CA et FCF en hausse) : "
           f"{q('SELECT COUNT(*) AS n FROM metriques WHERE exclusion IS NULL AND roic_median >= 15 AND spread_median > 0 AND ca_cagr > 0 AND fcf_cagr > 0')}")
-    print(f"  + sous son propre multiple median                 : "
-          f"{q('SELECT COUNT(*) AS n FROM metriques WHERE exclusion IS NULL AND roic_median >= 15 AND spread_median > 0 AND ca_cagr > 0 AND fcf_cagr > 0 AND ecart_multiple < 0')}")
+    base_q = ("exclusion IS NULL AND roic_median >= 15 AND spread_median > 0 "
+              "AND ca_cagr > 0 AND fcf_cagr > 0")
+    print(f"  + EPV calculable                                  : "
+          f"{q(f'SELECT COUNT(*) AS n FROM metriques WHERE {base_q} AND epv_sur_cours IS NOT NULL')}")
+    print(f"  + plancher EPV >= 40 % du cours                   : "
+          f"{q(f'SELECT COUNT(*) AS n FROM metriques WHERE {base_q} AND epv_sur_cours >= 0.4')}")
     print(f"  + plancher EPV >= 60 % du cours                   : "
-          f"{q('SELECT COUNT(*) AS n FROM metriques WHERE exclusion IS NULL AND roic_median >= 15 AND spread_median > 0 AND ca_cagr > 0 AND fcf_cagr > 0 AND ecart_multiple < 0 AND epv_sur_cours >= 0.6')}")
+          f"{q(f'SELECT COUNT(*) AS n FROM metriques WHERE {base_q} AND epv_sur_cours >= 0.6')}")
 
-    print("\ndix premiers par decote sur multiple propre :")
+    print("\ndix premiers par pouvoir beneficiaire rapporte au cours :")
     for l in d1(
         "SELECT m.ticker, s.nom, m.roic_median, m.ecart_multiple, m.epv_sur_cours, "
         "m.score_moat, m.score_moat_max, s.vaneck FROM metriques m "
         "JOIN societe s ON s.ticker = m.ticker "
         "WHERE m.exclusion IS NULL AND m.roic_median >= 15 AND m.ca_cagr > 0 "
-        "AND m.fcf_cagr > 0 AND m.ecart_multiple IS NOT NULL "
-        "ORDER BY m.ecart_multiple ASC LIMIT 10")[0]["results"]:
+        "AND m.fcf_cagr > 0 AND m.epv_sur_cours IS NOT NULL "
+        "ORDER BY m.epv_sur_cours DESC LIMIT 10")[0]["results"]:
         print(f"  {l['ticker']:7} ROIC {round(l['roic_median'] or 0):3} %  "
-              f"multiple {round(100 * (l['ecart_multiple'] or 0)):+4} %  "
+              f"EPV/cours {round(100 * (l['epv_sur_cours'] or 0)):4} %  "
               f"EPV/cours {round(100 * (l['epv_sur_cours'] or 0)):3} %  "
               f"moat {l['score_moat']}/{l['score_moat_max']}"
               f"{'  VanEck' if l['vaneck'] else ''}  {(l['nom'] or '')[:28]}")
