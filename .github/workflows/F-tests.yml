@@ -3,8 +3,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'src/noyau.js'
-      - 'src/test_noyau.mjs'
+      - 'src/**'
 
 jobs:
   tests:
@@ -15,5 +14,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Noms non definis dans les scripts
+        run: cd src && python verif_noms.py
       - name: Non-regression du noyau
         run: node src/test_noyau.mjs
