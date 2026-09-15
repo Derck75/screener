@@ -38,6 +38,12 @@ CF_TOKEN = os.environ["CF_TOKEN"]
 D1_URL = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}/d1/database/{CF_DB}/query"
 CHART = ("https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
          "?range=6y&interval=1mo")
+
+# Yahoo refuse les adresses des serveurs GitHub : 429 immediat, en 0,0 s, sur
+# toutes les requetes. Ce n'est pas une question de cadence et attendre n'y
+# change rien. Les listes StockAnalysis repondent — et portent DEJA le cours
+# et la capitalisation. Quelques requetes remplacent 710 appels individuels.
+LISTES_US = ["nyse-stocks", "nasdaq-stocks", "nyseamerican-stocks"]
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
@@ -115,6 +121,66 @@ def chart(sym):
     if not cours:
         return None
     return float(cours), serie, meta.get("currency")
+
+
+def lire_liste(url, s):
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, timeout=45) as r:
+            return r.read().decode("utf-8", "replace")
+    except Exception as e:
+        s.erreur("liste_sa", f"{type(e).__name__} {url[-30:]}")
+        return None
+
+
+def cours_depuis_listes(s):
+    """Rend {ticker: (cours, capitalisation)} pour tout le panel americain.
+
+    CE QUE CETTE VOIE NE DONNE PAS : l'historique mensuel, donc le multiple
+    median propre au titre. `per_median` et `ecart_multiple` restent nuls.
+    Ce n'est pas une perte seche : ce critere etait CIRCULAIRE — il compare le
+    multiple courant a la mediane du titre, c'est-a-dire la quantite meme
+    qu'emploie la brique de multiple de l'ancrage propre. Trier dessus
+    revenait a selectionner les societes dont l'ancrage sortirait haut par
+    construction, quelle que soit leur valeur reelle.
+    """
+    out = {}
+    for chemin in LISTES_US:
+        html = lire_liste(f"https://stockanalysis.com/list/{chemin}/", s)
+        if not html:
+            continue
+        ent = [re.sub(r"<[^>]+>", " ", h).strip().lower()
+               for h in re.findall(r"<th[^>]*>(.*?)</th>", html, re.S)]
+        i_sym = next((i for i, l in enumerate(ent) if "symbol" in l), None)
+        i_cap = next((i for i, l in enumerate(ent) if "market cap" in l), None)
+        i_px = next((i for i, l in enumerate(ent)
+                     if l.strip() in ("price", "stock price")), None)
+        if i_sym is None or i_px is None:
+            s.erreur("entetes_liste", f"{chemin} : {ent[:6]}")
+            continue
+        n = 0
+        for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S):
+            c = [re.sub(r"<[^>]+>", " ", x).strip()
+                 for x in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)]
+            if len(c) <= max(i_sym, i_px):
+                continue
+            try:
+                px = float(c[i_px].replace(",", "").replace("$", "").strip())
+            except ValueError:
+                continue
+            cap = None
+            if i_cap is not None and i_cap < len(c):
+                m = re.match(r"^[^\d]*([\d.,]+)\s*([TBMK])?", c[i_cap])
+                if m:
+                    cap = float(m.group(1).replace(",", "")) * {
+                        "T": 1e12, "B": 1e9, "M": 1e6, "K": 1e3}.get(
+                        (m.group(2) or "").upper(), 1)
+            out[c[i_sym].upper().replace(".", "-")] = (px, cap)
+            n += 1
+        print(f"  {chemin} : {n} cours")
+        s.compte("cours_lus", n)
+        time.sleep(0.8)
+    return out
 
 
 def close_proche(serie, iso):
@@ -210,40 +276,31 @@ def main():
                 comptes.setdefault(l["ticker"], {})[int(l["exercice"])] = l
         page += 1
 
-    # ---- cotations ----------------------------------------------------------
-    maj = []
-    echecs = refus_epv = 0
-    cours_canari = None
+    # ---- cotations, depuis les listes ---------------------------------------
+    s.phase("cotations")
+    table = cours_depuis_listes(s)
+    print(f"  {len(table)} cours disponibles")
+    maj, refus_epv, echecs = [], 0, 0
+    cours_canari = (table.get(CANARI_TICKER) or (None,))[0]
 
-    for i, t in enumerate(cibles, 1):
-        # Coupe-circuit : si les 8 premieres echouent toutes, la source refuse
-        # l'acces et insister coute une heure pour rien.
-        if i == 9 and not maj:
-            print("  ARRET : 8 premieres cotations en echec — la source refuse")
-            s.erreur("source_refuse", "8/8 en echec")
-            break
-        c = chart(t)
-        time.sleep(0.25)
-        if c is None:
+    for t in cibles:
+        px = table.get(t.upper())
+        if not px or not px[0]:
             echecs += 1
+            s.erreur("sans_cours", t)
             continue
-        cours, serie, devise = c
-        if t == CANARI_TICKER:
-            cours_canari = cours
-
+        cours, capi_liste = px
         annees = comptes.get(t) or {}
         ans = sorted(annees)
         if not ans:
             continue
         der = annees[ans[-1]]
         actions = der.get("shares")
-
-        capi = cours * actions if actions else None
+        capi = capi_liste or (cours * actions if actions else None)
         fcf_der = (der["cfo"] - abs(der["capex"])) \
             if (der.get("cfo") is not None and der.get("capex") is not None) else None
         fcf_y = (fcf_der / capi) if (fcf_der is not None and capi) else None
 
-        # -- plancher EPV ------------------------------------------------------
         epv = epv_sur_cours = None
         ebits = [annees[a]["ebit"] for a in ans if annees[a].get("ebit") is not None]
         taux = [annees[a]["tax"] / annees[a]["pretax"] for a in ans
@@ -260,34 +317,19 @@ def main():
                     epv = (capitalise - dn) / actions
                     epv_sur_cours = epv / cours
                 else:
-                    refus_epv += 1   # dette nette > pouvoir capitalise
+                    refus_epv += 1
             else:
                 refus_epv += 1
         else:
             refus_epv += 1
 
-        # -- multiples : mediane DU TITRE, jamais du secteur --------------------
         per_cour = None
-        bpa_der = (der["netIncome"] / actions) \
+        bpa = (der["netIncome"] / actions) \
             if (der.get("netIncome") is not None and actions) else None
-        if bpa_der and bpa_der > 0:
-            per_cour = cours / bpa_der
+        if bpa and bpa > 0:
+            per_cour = cours / bpa
 
-        pers = []
-        for a in ans:
-            d = annees[a]
-            act, rn = d.get("shares"), d.get("netIncome")
-            if not act or rn is None or rn <= 0:
-                continue
-            px = close_proche(serie, d.get("clot") or f"{a}-12-31")
-            if px:
-                pers.append(px / (rn / act))
-        per_med = st.median(pers) if len(pers) >= 3 else None
-        ecart = (per_cour / per_med - 1) if (per_cour and per_med) else None
-
-        maj.append((t, cours, capi, epv, epv_sur_cours, fcf_y, per_cour, per_med, ecart))
-        if i % 100 == 0:
-            print(f"  {i}/{len(cibles)} cotations, {echecs} echecs")
+        maj.append((t, cours, capi, epv, epv_sur_cours, fcf_y, per_cour, None, None))
 
     print(f"  {len(maj)} cotations exploitables, {echecs} echecs")
 
