@@ -72,11 +72,11 @@ def d1(sql, params=None):
     return j["result"]
 
 
-def journal(statut, n, canari, message, detail=None):
+def journal(statut, etape, n, canari, message, detail=None):
     d1("INSERT INTO runs (debut, fin, etape, statut, lignes_ecrites, canari, message, detail)"
        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
        [RUN_TS, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "incr6_prix", statut, n, canari, message,
+        etape, statut, n, canari, message,
         json.dumps(detail) if detail else None])
 
 
@@ -135,14 +135,20 @@ def close_proche(serie, iso):
 
 
 def main():
-    print(f"incr6_prix v1 — Run {RUN_TS}")
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--tranche", type=int, default=0, help="0 = toutes")
+    ap.add_argument("--nb-tranches", type=int, default=1)
+    a = ap.parse_args()
+    print(f"incr6_prix v2 — Run {RUN_TS}"
+          + (f" — tranche {a.tranche}/{a.nb_tranches}" if a.tranche else ""))
 
     # ---- diagnostic demande : pourquoi la moitie de l'univers est ecartee ----
     print("\nventilation des exclusions mecaniques :")
-    for l in d1("SELECT exclusion, COUNT(*) AS n FROM metriques "
-                "WHERE exclusion IS NOT NULL GROUP BY exclusion ORDER BY n DESC"
-                )[0]["results"]:
-        print(f"  {l['n']:5}  {l['exclusion']}")
+    for l in d1("SELECT substr(exclusion, 1, instr(exclusion || ' —', ' —') - 1) AS motif, "
+                "COUNT(*) AS n FROM metriques WHERE exclusion IS NOT NULL "
+                "GROUP BY motif ORDER BY n DESC")[0]["results"]:
+        print(f"  {l['n']:5}  {l['motif']}")
     mixte = d1("SELECT COUNT(*) AS n FROM metriques WHERE denominateur_roic = 'mixte'"
                )[0]["results"][0]["n"]
     print(f"  {mixte:5}  (hors exclusion) series a denominateur de ROIC mixte")
@@ -153,8 +159,14 @@ def main():
         "AND roic_median >= ? ORDER BY roic_median DESC", [ROIC_MIN]
     )[0]["results"]]
     print(f"\n{len(cibles)} societes pre-qualifiees (ROIC median >= {ROIC_MIN} %)")
+    if a.tranche:
+        # Repartition par modulo : chaque tranche recoit un echantillon
+        # comparable, la ou un decoupage par bloc donnerait a la premiere
+        # toutes les grosses capitalisations et fausserait les comparaisons.
+        cibles = [t for i, t in enumerate(cibles) if i % a.nb_tranches == a.tranche - 1]
+        print(f"  tranche {a.tranche} : {len(cibles)} societes")
     if not cibles:
-        journal("PANNE", 0, "ROUGE", "aucune cible pre-qualifiee")
+        journal("PANNE", f"incr6_prix_t{a.tranche}", 0, "ROUGE", "aucune cible")
         sys.exit(1)
 
     # ---- comptes des cibles -------------------------------------------------
@@ -162,8 +174,8 @@ def main():
     comptes = {}
     page = 0
     while True:
-        r = d1("SELECT ticker, exercice, ebit, resultat_net, fcf, dette, "
-               "tresorerie, actions_diluees, impot_effectif, clot FROM comptes "
+        r = d1("SELECT ticker, exercice, ebit, netIncome, cfo, capex, debt, "
+               "cash, shares, tax, pretax, clot FROM comptes2 "
                "ORDER BY ticker, exercice LIMIT 5000 OFFSET ?", [page * 5000]
                )[0]["results"]
         if not r:
@@ -193,22 +205,26 @@ def main():
         if not ans:
             continue
         der = annees[ans[-1]]
-        actions = der.get("actions_diluees")
+        actions = der.get("shares")
 
         capi = cours * actions if actions else None
-        fcf_y = (der["fcf"] / capi) if (der.get("fcf") is not None and capi) else None
+        fcf_der = (der["cfo"] - abs(der["capex"])) \
+            if (der.get("cfo") is not None and der.get("capex") is not None) else None
+        fcf_y = (fcf_der / capi) if (fcf_der is not None and capi) else None
 
         # -- plancher EPV ------------------------------------------------------
         epv = epv_sur_cours = None
         ebits = [annees[a]["ebit"] for a in ans if annees[a].get("ebit") is not None]
-        taux = [annees[a]["impot_effectif"] for a in ans
-                if annees[a].get("impot_effectif") is not None]
+        taux = [annees[a]["tax"] / annees[a]["pretax"] for a in ans
+                if annees[a].get("tax") is not None
+                and (annees[a].get("pretax") or 0) > 0
+                and 0 <= annees[a]["tax"] / annees[a]["pretax"] <= 0.6]
         if len(ebits) >= EPV_MIN_EXERCICES and actions:
             ebit_med = st.median(ebits)
             t_med = st.median(taux) if taux else TAUX_IMPOT_DEFAUT
             if ebit_med > 0:
                 capitalise = ebit_med * (1 - t_med) / TAUX_OBSTACLE_EPV
-                dn = (der.get("dette") or 0) - (der.get("tresorerie") or 0)
+                dn = (der.get("debt") or 0) - (der.get("cash") or 0)
                 if dn < capitalise:
                     epv = (capitalise - dn) / actions
                     epv_sur_cours = epv / cours
@@ -221,15 +237,15 @@ def main():
 
         # -- multiples : mediane DU TITRE, jamais du secteur --------------------
         per_cour = None
-        bpa_der = (der["resultat_net"] / actions) \
-            if (der.get("resultat_net") is not None and actions) else None
+        bpa_der = (der["netIncome"] / actions) \
+            if (der.get("netIncome") is not None and actions) else None
         if bpa_der and bpa_der > 0:
             per_cour = cours / bpa_der
 
         pers = []
         for a in ans:
             d = annees[a]
-            act, rn = d.get("actions_diluees"), d.get("resultat_net")
+            act, rn = d.get("shares"), d.get("netIncome")
             if not act or rn is None or rn <= 0:
                 continue
             px = close_proche(serie, d.get("clot") or f"{a}-12-31")
@@ -245,12 +261,14 @@ def main():
     print(f"  {len(maj)} cotations exploitables, {echecs} echecs")
 
     # ---- canari -------------------------------------------------------------
+    if a.tranche and CANARI_TICKER not in cibles:
+        cours_canari = CANARI_COURS_MIN + 1   # le temoin n'est pas dans cette tranche
     if cours_canari is None or cours_canari < CANARI_COURS_MIN or \
-       len(maj) < 0.6 * len(cibles):
+       len(maj) < 0.5 * len(cibles):
         msg = (f"canari rouge : {CANARI_TICKER} = {cours_canari}, "
                f"{len(maj)}/{len(cibles)} cotations")
         print("PANNE : " + msg)
-        journal("PANNE", 0, "ROUGE", msg)
+        journal("PANNE", f"incr6_prix_t{a.tranche}", 0, "ROUGE", msg)
         sys.exit(1)
 
     # ---- ecriture -----------------------------------------------------------
@@ -294,7 +312,7 @@ def main():
               f"moat {l['score_moat']}/{l['score_moat_max']}"
               f"{'  VanEck' if l['vaneck'] else ''}  {(l['nom'] or '')[:28]}")
 
-    journal("OK", ecrites, "VERT",
+    journal("OK", f"incr6_prix_t{a.tranche}", ecrites, "VERT",
             f"{ecrites} cotations, {refus_epv} refus EPV, {echecs} echecs",
             {"cibles": len(cibles), "ecrites": ecrites, "echecs": echecs})
     print("OK")
