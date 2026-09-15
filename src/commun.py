@@ -125,12 +125,13 @@ def d1(sql, params=None, lignes=0, table=None):
         _fatal(f"reponse D1 illisible ({r.status_code}) {r.text[:200]}")
     if not j.get("success"):
         err = json.dumps(j.get("errors"))[:300]
-        # Le quota se nomme lui-meme : on le dit en clair plutot que de laisser
-        # un code 7500 brut, indistinguable d'une erreur de requete.
-        if "daily row write limit" in err or "7500" in err:
+        # 7500 est le code GENERIQUE de toute erreur SQL : le tester revenait
+        # a annoncer un quota epuise sur une colonne manquante, et a masquer
+        # le vrai message pendant des jours. Seul le libelle fait foi.
+        if "daily row write limit" in err:
             _fatal("QUOTA D1 EPUISE — les ecritures reprennent a minuit UTC. "
                    "Base laissee en etat partiel : relancer l'etape demain.")
-        _fatal(f"erreur D1 : {err}")
+        _fatal(f"erreur D1 (message brut) : {err}")
     if lignes and _sonde:
         _sonde.ecrites += lignes * (1 + INDEX.get(table or "", 0))
     return j["result"]
