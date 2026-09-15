@@ -1,4 +1,4 @@
-/* INCREMENT 5 v2 — Metriques via le NOYAU du worker -> table `metriques`.
+/* INCREMENT 5 v3 — Metriques via le NOYAU du worker -> table `metriques`.
  *
  * Ce script NE CALCULE RIEN. Il lit les postes bruts, appelle les fonctions
  * du worker et stocke le resultat. C'est la seule facon de garantir qu'il
@@ -14,11 +14,26 @@
  */
 
 import { derives, roicRetenu, profilSociete, ancrageEPV, mediane } from './noyau.js';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 const { CF_ACCOUNT, CF_DB, CF_TOKEN } = process.env;
 const URL_D1 = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/d1/database/${CF_DB}/query`;
 const SEUIL = Number(process.env.SEUIL_USD || 9.0);   // PAS un WACC
-const PLAFOND = Number(process.env.PLAFOND_ECRITURES || 70000);
+/* PLAFOND D'ECRITURES. 0 = controle desactive : c'est le reglage correct en
+   plan payant, ou un plafond local devient une contrainte artificielle qui
+   bloque un systeme par ailleurs sain.
+   ON TRACE L'ORIGINE DE LA VALEUR, PAS SEULEMENT LA VALEUR. Un log qui
+   annonce « plafond 70000 » ne dit pas si ce 70000 vient d'un fichier perime
+   ou d'une variable d'environnement posee dans le workflow. Ces deux causes
+   ont des remedes opposes — recoller le fichier, ou retirer une ligne du
+   YAML — et les confondre a deja coute plusieurs tours. */
+const PLAFOND_BRUT = process.env.PLAFOND_ECRITURES;
+const PLAFOND = Number(PLAFOND_BRUT || 0);
+const PLAFOND_ORIGINE = (PLAFOND_BRUT === undefined || PLAFOND_BRUT === "")
+  ? "defaut du fichier"
+  : `variable d'environnement PLAFOND_ECRITURES="${PLAFOND_BRUT}"`;
 const RUN_TS = new Date().toISOString().slice(0, 19) + "Z";
 const CANARI = ["AAPL", "MSFT", "V", "MA", "NVDA"];
 
@@ -85,9 +100,26 @@ const COLONNES = ["roic_median", "roic_dernier", "spread_median", "n_ex_roic_sup
   "conversion_fcf_rn", "actions_var_5a", "dette_sur_ca", "cp_sur_ca", "score_moat",
   "score_moat_max", "biais_acquereur", "n_non_calculable", "exclusion", "maj"];
 
+/* EMPREINTE — met fin au debat « quel fichier tourne ? ».
+   Une version ecrite a la main peut etre fausse : il suffit d'oublier de
+   l'incrementer, et c'est exactement ce qui s'est produit — la correction du
+   plafond n'avait pas bouge le « v2 », rendant le log indistinguable de la
+   version d'avant. Une empreinte est calculee sur le contenu REEL du fichier
+   qui s'execute : elle ne peut pas mentir. */
+function empreinte() {
+  try {
+    const chemin = fileURLToPath(import.meta.url);
+    const brut = readFileSync(chemin);
+    return createHash('sha256').update(brut).digest('hex').slice(0, 8)
+         + ` · ${brut.toString().split('\n').length} lignes`;
+  } catch { return "indisponible"; }
+}
+
 async function main() {
-  console.log(`incr5_metriques v2 (noyau partage) — Run ${RUN_TS}`);
+  console.log(`incr5_metriques v3 (noyau partage) — Run ${RUN_TS}`);
+  console.log(`empreinte ${empreinte()}`);
   console.log(`seuil de rentabilite forfaitaire : ${SEUIL} % — PAS un WACC`);
+  console.log(`plafond d'ecritures : ${PLAFOND === 0 ? "AUCUN (controle desactive)" : PLAFOND} — origine : ${PLAFOND_ORIGINE}`);
 
   phase("univers");
   const soc = {};
@@ -221,12 +253,21 @@ async function main() {
 
   if (aEcrire.length) {
     phase("ecriture");
-    const deja = (await d1("SELECT COALESCE(SUM(lignes_ecrites),0) AS n FROM runs "
-                         + "WHERE debut >= date('now')"))[0].results[0].n || 0;
     const cout = aEcrire.length * 3;   // metriques porte 2 index
-    console.log(`  budget : ${deja} deja ecrites, ${cout} prevues, plafond ${PLAFOND}`);
-    if (deja + cout > PLAFOND)
-      await fatal(`BUDGET INSUFFISANT — ${deja} + ${cout} depasse ${PLAFOND}`);
+    if (PLAFOND > 0) {
+      // Les intentions ne comptent que deux heures : un run qui n'a jamais
+      // abouti n'a pas ecrit ce qu'il annoncait, et les cumuler bloquait le
+      // systeme sur 69 720 ecritures fantomes.
+      const deja = (await d1("SELECT COALESCE(SUM(lignes_ecrites),0) AS n FROM runs "
+                           + "WHERE debut >= date('now') AND (statut = 'OK' OR "
+                           + "(statut = 'EN COURS' AND debut >= datetime('now','-2 hours')))"
+                            ))[0].results[0].n || 0;
+      console.log(`  budget : ${deja} deja ecrites, ${cout} prevues, plafond ${PLAFOND}`);
+      if (deja + cout > PLAFOND)
+        await fatal(`BUDGET INSUFFISANT — ${deja} + ${cout} depasse ${PLAFOND}`);
+    } else {
+      console.log(`  budget : controle desactive, ${cout} lignes prevues`);
+    }
     // Intention posee AVANT d'ecrire : un run coupe laisse sinon ses
     // ecritures invisibles au compteur du lendemain.
     await journal("EN COURS", cout, "—", `intention de ${cout} ecritures`);
