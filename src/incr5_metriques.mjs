@@ -98,7 +98,8 @@ const COLONNES = ["roic_median", "roic_dernier", "spread_median", "n_ex_roic_sup
   "contre_preuve_ecart", "profil_type", "profil_ko", "ca_cagr", "fcf_cagr", "ebit_cagr",
   "ca_hausse_n", "ca_hausse_m", "fcf_positif_n", "fcf_positif_m", "mb_mediane",
   "conversion_fcf_rn", "actions_var_5a", "dette_sur_ca", "cp_sur_ca", "score_moat",
-  "score_moat_max", "biais_acquereur", "n_non_calculable", "exclusion", "maj"];
+  "score_moat_max", "biais_acquereur", "ebit_dispersion", "drapeaux",
+  "n_non_calculable", "exclusion", "maj"];
 
 /* EMPREINTE — met fin au debat « quel fichier tourne ? ».
    Une version ecrite a la main peut etre fausse : il suffit d'oublier de
@@ -116,7 +117,7 @@ function empreinte() {
 }
 
 async function main() {
-  console.log(`incr5_metriques v3 (noyau partage) — Run ${RUN_TS}`);
+  console.log(`incr5_metriques v4 (noyau partage) — Run ${RUN_TS}`);
   console.log(`empreinte ${empreinte()}`);
   console.log(`seuil de rentabilite forfaitaire : ${SEUIL} % — PAS un WACC`);
   console.log(`plafond d'ecritures : ${PLAFOND === 0 ? "AUCUN (controle desactive)" : PLAFOND} — origine : ${PLAFOND_ORIGINE}`);
@@ -170,6 +171,54 @@ async function main() {
         ? 100 * (Math.pow(v[v.length - 1] / v[0], 1 / (v.length - 1)) - 1) : null; };
     const caS = srz("ca"), fcfS = srz("fcf");
 
+    // ═══ COUCHE D'HYGIENE — drapeaux sur les CHAMPS, jamais d'exclusion ═══
+    // Un screener qui ecarte une societe sur un soupcon cree un angle mort
+    // permanent ; un screener qui signale laisse l'analyse trancher. Tous ces
+    // controles sont arithmetiques sur des series deja en base : aucun appel
+    // reseau, aucune ecriture supplementaire.
+    const drapeaux = [];
+
+    // 1. DISPERSION DE L'EBIT. L'EPV capitalise l'EBIT MEDIAN a perpetuite.
+    //    Sur une cyclique dont la fenetre contient son pic — Builders
+    //    FirstSource, Alpha Metallurgical, SandRidge et Atkore sortaient a
+    //    plus de 120 % du cours — cette mediane n'est pas un pouvoir
+    //    beneficiaire normalise, c'est un sommet de cycle capitalise.
+    //    Greenwald normalise sur un cycle COMPLET ; six exercices dont deux
+    //    exceptionnels ne le sont pas.
+    const ebitS = srz("ebit").filter(v => v > 0);
+    let ebitDisp = null;
+    if (ebitS.length >= 4) {
+      const med = mediane(ebitS);
+      if (med > 0) {
+        ebitDisp = Math.max(...ebitS) / med;
+        if (ebitDisp >= 2) drapeaux.push("cyclique");
+      }
+    }
+
+    // 2. DIVISION DU NOMINAL. Un ratio d'actions proche d'un entier de 2 a 10
+    //    en un seul exercice n'est pas une emission : c'est un split. Il fausse
+    //    SILENCIEUSEMENT tout agregat par action, donc les multiples, donc la
+    //    cherte — l'objet meme du screener. Copart affichait un BPA en recul
+    //    de 11,5 % par an qui n'etait que son split 4:1 de 2021.
+    const actSerie = srz("shares");
+    for (let i = 1; i < actSerie.length; i++) {
+      if (!actSerie[i - 1]) continue;
+      const r = actSerie[i] / actSerie[i - 1];
+      for (const k of [2, 3, 4, 5, 7, 10]) {
+        if (Math.abs(r - k) < 0.08 * k || Math.abs(r - 1 / k) < 0.08 / k) {
+          drapeaux.push("split");
+          break;
+        }
+      }
+      if (drapeaux.includes("split")) break;
+    }
+
+    // 3. MARGE BRUTE HORS BORNES. Une marge hors [0 %, 100 %] est
+    //    arithmetiquement impossible : le champ est faux, pas la societe.
+    //    Evolution AB sortait a 102,8 %.
+    // 4. SERIE DE MARGE NON HOMOGENE : deja detectee par le noyau, qui publie
+    //    INDECIDABLE plutot qu'un plafond fonde sur un changement de perimetre.
+
     // EXCLUSION : la typologie du noyau decide, pas un seuil local.
     // Un ROIC eleve n'exclut jamais — c'est la signature d'un modele
     // asset-light, et v1 ecartait ainsi Apple, Nvidia et Mastercard.
@@ -193,7 +242,13 @@ async function main() {
     const mbS = ans.map(a => { const l = der.lignes[a];
       return (l?.ca && Number.isFinite(l?.margeBrute)) ? l.margeBrute * 100 : null; })
       .filter(Number.isFinite);
-    const mbMed = mbS.length ? mediane(mbS) : null;
+    let mbMed = mbS.length ? mediane(mbS) : null;
+    if (mbMed != null && (mbMed < 0 || mbMed > 100)) {
+      drapeaux.push("marge_aberrante");
+      erreur("marge_hors_bornes", `${ticker} : ${mbMed.toFixed(1)} %`);
+      mbMed = null;          // champ invalide, societe conservee
+    }
+    if (drapeaux.length) compte("drapeau_" + drapeaux[0]);
 
     if (CANARI.includes(ticker)) etatCanari[ticker] = { roicMed, type: P.type, excl };
 
@@ -214,6 +269,7 @@ async function main() {
       conversion_fcf_rn: null, actions_var_5a:
         (actS.length >= 2 && actS[0] > 0) ? 100 * (actS[actS.length - 1] / actS[0] - 1) : null,
       dette_sur_ca: detteCA, cp_sur_ca: cpCA,
+      ebit_dispersion: ebitDisp, drapeaux: drapeaux.length ? drapeaux.join(",") : null,
       score_moat: pts, score_moat_max: mx, biais_acquereur: biais,
       n_non_calculable: [roicMed, cg("ca"), cg("fcf"), mbMed].filter(x => x == null).length,
       exclusion: excl, maj: RUN_TS,
@@ -277,7 +333,7 @@ async function main() {
       const lot = aEcrire.slice(i, i + 100).map(([t, v]) =>
         "(" + tx(t) + ", " + COLONNES.map(c =>
           ["denominateur_roic", "base_roic", "profil_type", "profil_ko",
-           "exclusion", "maj"].includes(c) ? tx(v[c]) : nb(v[c])).join(", ") + ")");
+           "drapeaux", "exclusion", "maj"].includes(c) ? tx(v[c]) : nb(v[c])).join(", ") + ")");
       await d1(`INSERT OR REPLACE INTO metriques (${liste}) VALUES ` + lot.join(", "));
       if ((i + 100) % 1000 === 0) console.log(`  ecrit ${Math.min(i + 100, aEcrire.length)}/${aEcrire.length}`);
     }
@@ -294,6 +350,11 @@ async function main() {
     const n = (await d1(`SELECT COUNT(*) AS n FROM metriques WHERE exclusion IS NULL AND ${w}`))[0].results[0].n;
     console.log(`  ${lib.padEnd(24)} ${n}`);
   }
+  for (const l of (await d1("SELECT drapeaux, COUNT(*) AS n FROM metriques "
+                          + "WHERE drapeaux IS NOT NULL GROUP BY drapeaux ORDER BY n DESC"
+                           ))[0].results)
+    console.log(`  drapeau ${String(l.drapeaux).padEnd(18)} ${l.n}`);
+
   console.log("\n--- SONDE ---");
   console.log("  " + Object.entries(S.compteurs).map(([k, v]) => `${k}=${v}`).join(", "));
   for (const [c, e] of Object.entries(S.erreurs)) console.log(`  ERREUR ${c} x${e.n} — ${e.exemple || ""}`);
