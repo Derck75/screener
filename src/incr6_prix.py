@@ -180,6 +180,63 @@ def lire_liste(url, s):
         return None
 
 
+PAGINATIONS = ["?p={n}", "?page={n}", "?r=500&p={n}"]
+PAGES_MAX = 12
+
+
+def pages_liste(chemin, s):
+    """Rend la liste des pages HTML d'une cotation, pagination COMPRISE.
+
+    🔴 DEFAUT CORRIGE ICI. La lecture ne prenait que la premiere page, et
+    StockAnalysis en sert 500 lignes. Deux cotations ont rendu exactement 500
+    — un nombre rond qui n'arrive jamais par hasard sur un marche de 2 800
+    valeurs. Resultat : 1 242 cours pour 710 societes a servir, 409 absentes,
+    et un canari rouge qui avait parfaitement raison.
+
+    LE PARAMETRE DE PAGINATION N'EST PAS SUPPOSE, IL EST DECOUVERT. Trois
+    formes d'URL sont essayees sur la page 2 ; on garde celle qui ramene des
+    symboles NOUVEAUX, et on l'annonce dans le log. Coder en dur une forme non
+    observee reviendrait a remplacer une panne bruyante par une panne muette :
+    la page 2 repondrait 200 en reservant la page 1, et le total paraitrait
+    plausible tout en restant tronque. D'ou le test sur la NOUVEAUTE des
+    symboles, et non sur le code HTTP.
+    """
+    base = f"https://stockanalysis.com/list/{chemin}/"
+    p1 = lire_liste(base, s)
+    if not p1:
+        return []
+    pages, vus = [p1], set(re.findall(r"/stocks/([a-z.\-]+)/", p1, re.I))
+    forme = None
+
+    for cand in PAGINATIONS:
+        essai = lire_liste(base + cand.format(n=2), s)
+        if not essai:
+            continue
+        neufs = set(re.findall(r"/stocks/([a-z.\-]+)/", essai, re.I)) - vus
+        if len(neufs) >= 20:
+            forme, pages, vus = cand, pages + [essai], vus | neufs
+            print(f"  {chemin} : pagination « {cand} » — {len(neufs)} symboles neufs en page 2")
+            break
+
+    if forme is None:
+        print(f"  {chemin} : page unique ({len(vus)} symboles) — aucune pagination detectee")
+        s.compte("liste_page_unique")
+        return pages
+
+    n = 3
+    while n <= PAGES_MAX:
+        h = lire_liste(base + forme.format(n=n), s)
+        if not h:
+            break
+        neufs = set(re.findall(r"/stocks/([a-z.\-]+)/", h, re.I)) - vus
+        if not neufs:
+            break
+        pages.append(h); vus |= neufs; n += 1
+        time.sleep(0.6)
+    print(f"  {chemin} : {len(pages)} page(s), {len(vus)} symboles distincts")
+    return pages
+
+
 def cours_depuis_listes(s):
     """Rend {ticker: (cours, capitalisation)} pour tout le panel americain.
 
@@ -193,9 +250,10 @@ def cours_depuis_listes(s):
     """
     out = {}
     for chemin in LISTES_US:
-        html = lire_liste(f"https://stockanalysis.com/list/{chemin}/", s)
-        if not html:
+        pages = pages_liste(chemin, s)
+        if not pages:
             continue
+        html = "".join(pages)
         ent = [re.sub(r"<[^>]+>", " ", h).strip().lower()
                for h in re.findall(r"<th[^>]*>(.*?)</th>", html, re.S)]
         i_sym = next((i for i, l in enumerate(ent) if "symbol" in l), None)
@@ -279,7 +337,14 @@ def main():
         print("par le worker Cloudflare ou par StockAnalysis.")
         return
 
-    print(f"incr6_prix v4 — Run {RUN_TS}"
+    try:
+        import hashlib
+        _b = open(__file__, "rb").read()
+        print(f"empreinte {hashlib.sha256(_b).hexdigest()[:8]} · "
+              f"{_b.count(chr(10).encode()) + 1} lignes")
+    except OSError:
+        print("empreinte indisponible")
+    print(f"incr6_prix v5 — Run {RUN_TS}"
           + (f" — tranche {a.tranche}/{a.nb_tranches}" if a.tranche else ""))
 
     # ---- diagnostic demande : pourquoi la moitie de l'univers est ecartee ----
@@ -328,6 +393,30 @@ def main():
     s.phase("cotations")
     table = cours_depuis_listes(s)
     print(f"  {len(table)} cours disponibles")
+
+    # ---- REPLI PAR TICKER, POUR CE QUE LES LISTES N'ONT PAS SERVI -----------
+    # La pagination ci-dessus repose sur une forme d'URL decouverte a
+    # l'execution. Le jour ou la source la changera, la decouverte echouera en
+    # silence et la couverture retombera — exactement la panne d'aujourd'hui.
+    # Ce repli la rend NON CRITIQUE : ce qui manque apres les listes est
+    # rattrape un par un chez Yahoo, source deja utilisee ailleurs dans ce
+    # script. Il ne se declenche que sur le manquant, donc il ne coute rien
+    # quand les listes font leur travail.
+    manquants = [t for t in cibles if t not in table]
+    if manquants:
+        print(f"  repli par ticker sur {len(manquants)} manquant(s)")
+        rattrapes = 0
+        for i, t in enumerate(manquants):
+            c = chart(t)
+            if c:
+                table[t] = (c[0], None)   # capitalisation non servie par cette voie
+                rattrapes += 1
+            if i % 25 == 24:
+                time.sleep(1.0)
+            else:
+                time.sleep(0.15)
+        print(f"  {rattrapes} rattrape(s), {len(manquants) - rattrapes} introuvable(s)")
+        s.compte("rattrapes_yahoo", rattrapes)
     maj, refus_epv, echecs = [], 0, 0
     cours_canari = (table.get(CANARI_TICKER) or (None,))[0]
 
