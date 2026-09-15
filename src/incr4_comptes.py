@@ -32,8 +32,16 @@ from commun import (d1, journal, sonde, budget, verifier_schema,  # noqa: E402
 
 SEC_UA = os.environ.get("SEC_UA", "screener-perso contact@example.com")
 FRAMES = "https://data.sec.gov/api/xbrl/frames/us-gaap/{c}/{u}/{p}.json"
+# FENETRE LONGUE — 2014-2025. Six exercices ne suffisaient pas : 2020-2025
+# contient le choc Covid, la relance de 2021 et le pic inflationniste de 2022,
+# soit trois anomalies sur six. Une mediane calculee la-dessus n'est pas un
+# pouvoir beneficiaire normalise, et l'EPV capitalisait des sommets de cycle —
+# Builders FirstSource ressortait a 219 % du cours. Douze exercices traversent
+# le creux petrolier de 2015-2016 et un cycle complet.
+# Second effet : le filtre dur du cadre exige dix exercices pour un verdict
+# ferme. A six, toute societe etait en fenetre courte.
 EXERCICES = [int(a) for a in os.environ.get(
-    "EXERCICES", "2020,2021,2022,2023,2024,2025").split(",")]
+    "EXERCICES", ",".join(str(a) for a in range(2014, 2026))).split(",")]
 
 # Postes de FLUX (periode annuelle). Plusieurs tags par poste : la taxonomie
 # en offre plusieurs pour la meme notion, l'ordre est un ordre de preference.
@@ -197,7 +205,14 @@ def main():
     print(f"  {len(rangs)} lignes societe-exercice composees")
 
     s.phase("canari")
-    mini = 2500 * len(EXERCICES)
+    # CANARI A DENSITE VARIABLE. Un plancher fixe par exercice ferait echouer
+    # les annees anciennes a tort : moins de societes deposaient en 2014, et
+    # beaucoup de celles d'aujourd'hui n'etaient pas cotees. Le plancher suit
+    # donc l'anciennete, et le temoin reste la vraie garde.
+    def plancher(annee):
+        recul = 2025 - annee
+        return 2500 if recul <= 3 else (2000 if recul <= 7 else 1200)
+    mini = sum(plancher(a) for a in EXERCICES)
     if s.compteurs.get("canari_exercices", 0) < 1 or len(rangs) < mini:
         msg = (f"canari rouge : {CANARI} {s.compteurs.get('canari_exercices', 0)} "
                f"exercices, {len(rangs)} lignes (plancher {mini})")
