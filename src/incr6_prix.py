@@ -59,6 +59,52 @@ CANARI_COURS_MIN = 50
 RUN_TS = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+class Sonde:
+    """Sonde locale. `incr6_prix` est le seul script anterieur a `commun.py`
+    et n'en herite pas : sans cette classe, tous les appels a s.phase et
+    s.erreur echouaient par NameError."""
+
+    def __init__(self, etape):
+        self.etape, self.t0 = etape, time.time()
+        self.phases, self.compteurs, self.erreurs = {}, {}, {}
+        self.nom, self.pt = None, 0
+
+    def phase(self, nom):
+        if self.nom:
+            self.phases[self.nom] = round(time.time() - self.pt, 1)
+        self.nom, self.pt = nom, time.time()
+        print(f"[{nom}]")
+
+    def compte(self, cle, n=1):
+        self.compteurs[cle] = self.compteurs.get(cle, 0) + n
+
+    def erreur(self, cat, ex=None):
+        e = self.erreurs.setdefault(cat, {"n": 0, "exemple": None})
+        e["n"] += 1
+        if e["exemple"] is None and ex:
+            e["exemple"] = str(ex)[:120]
+
+    def resume(self):
+        if self.nom:
+            self.phases[self.nom] = round(time.time() - self.pt, 1)
+            self.nom = None
+        return {"duree_s": round(time.time() - self.t0, 1), "phases": self.phases,
+                "compteurs": self.compteurs, "erreurs": self.erreurs}
+
+    def afficher(self):
+        r = self.resume()
+        print(f"\n--- SONDE {self.etape} — {r['duree_s']} s ---")
+        if r["phases"]:
+            print("  " + ", ".join(f"{k} {v}s" for k, v in r["phases"].items()))
+        if r["compteurs"]:
+            print("  " + ", ".join(f"{k}={v}" for k, v in sorted(r["compteurs"].items())))
+        for c, e in sorted(r["erreurs"].items(), key=lambda x: -x[1]["n"]):
+            print(f"  ERREUR {c} x{e['n']}" + (f" — {e['exemple']}" if e["exemple"] else ""))
+        if not r["erreurs"]:
+            print("  aucune erreur categorisee")
+        return r
+
+
 def d1(sql, params=None):
     r = requests.post(
         D1_URL,
@@ -208,6 +254,7 @@ def main():
     ap.add_argument("--test-reseau", action="store_true",
                     help="trois requetes Yahoo, codes HTTP bruts, aucune ecriture")
     a = ap.parse_args()
+    s = Sonde("incr6_prix")
     if a.test_reseau:
         print("TEST RESEAU — aucune ecriture\n")
         for sym in ("AAPL", "MSFT", "MC.PA"):
@@ -231,7 +278,7 @@ def main():
         print("par le worker Cloudflare ou par StockAnalysis.")
         return
 
-    print(f"incr6_prix v2 — Run {RUN_TS}"
+    print(f"incr6_prix v3 — Run {RUN_TS}"
           + (f" — tranche {a.tranche}/{a.nb_tranches}" if a.tranche else ""))
 
     # ---- diagnostic demande : pourquoi la moitie de l'univers est ecartee ----
