@@ -72,8 +72,11 @@ async function fatal(msg) {
 
 const nb = v => (v === null || v === undefined || !Number.isFinite(Number(v)))
   ? "NULL" : String(Math.round(Number(v) * 1e6) / 1e6);
+// COUPER AVANT D'ECHAPPER. L'inverse tronquait parfois une apostrophe
+// doublee en son milieu et laissait un guillemet orphelin : la requete
+// entiere devenait invalide, sur un motif de refus contenant « d'affaires ».
 const tx = v => (v === null || v === undefined)
-  ? "NULL" : "'" + String(v).replaceAll("'", "''").slice(0, 200) + "'";
+  ? "NULL" : "'" + String(v).slice(0, 200).replaceAll("'", "''") + "'";
 
 const COLONNES = ["roic_median", "roic_dernier", "spread_median", "n_ex_roic_sup_seuil",
   "n_ex_total", "seuil_rentabilite_forfaitaire", "denominateur_roic", "base_roic",
