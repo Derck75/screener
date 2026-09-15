@@ -23,6 +23,7 @@ Idempotent : relancable sans dommage.
 
 import json
 import os
+import re
 import statistics as st
 import sys
 import time
@@ -278,7 +279,7 @@ def main():
         print("par le worker Cloudflare ou par StockAnalysis.")
         return
 
-    print(f"incr6_prix v3 — Run {RUN_TS}"
+    print(f"incr6_prix v4 — Run {RUN_TS}"
           + (f" — tranche {a.tranche}/{a.nb_tranches}" if a.tranche else ""))
 
     # ---- diagnostic demande : pourquoi la moitie de l'univers est ecartee ----
