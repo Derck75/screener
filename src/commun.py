@@ -35,9 +35,11 @@ CF_DB = os.environ["CF_DB"]
 CF_TOKEN = os.environ["CF_TOKEN"]
 D1_URL = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}/d1/database/{CF_DB}/query"
 
-# Plafond D1 Free : 100 000 lignes ecrites par jour. On s'arrete avant, pour
-# garder de quoi relancer une etape en cas d'echec.
-PLAFOND_JOUR = int(os.environ.get("PLAFOND_ECRITURES", "70000"))
+# Plafond d'ecritures quotidiennes. Le plan D1 Free en impose 100 000 ; le
+# plan payant n'en impose aucun. METTRE 0 DESACTIVE LE CONTROLE — c'est le
+# reglage correct en payant, ou un plafond local devient une contrainte
+# artificielle qui bloque un systeme par ailleurs sain.
+PLAFOND_JOUR = int(os.environ.get("PLAFOND_ECRITURES", "0"))
 
 # Index par table : chaque index ajoute une ecriture par ligne touchee.
 INDEX = {"societe": 1, "metriques": 2, "comptes": 0, "runs": 0, "presets": 0}
@@ -160,9 +162,30 @@ def journal(statut, etape, lignes, canari, message, detail=None):
 
 
 def budget(besoin, table):
-    """Refuse de demarrer si l'ecriture prevue ne tient pas dans la journee."""
+    """Refuse de demarrer si l'ecriture prevue ne tient pas dans la journee.
+
+    PLAFOND_JOUR a 0 : aucun controle. C'est le reglage du plan payant.
+
+    COMPTAGE. Les runs termines en succes comptent pour ce qu'ils ont ecrit.
+    Les intentions — posees avant l'ecriture pour qu'un run coupe laisse une
+    trace — ne comptent que DEUX HEURES. Au-dela, un run qui n'a jamais abouti
+    n'a pas consomme ce qu'il annoncait : les cumuler a fait grimper le
+    compteur a 69 720 ecritures fantomes et bloquer un systeme fonctionnel.
+    """
+    # ORIGINE AFFICHEE. « plafond 70000 » sans dire d'ou vient la valeur a
+    # coute plusieurs tours : impossible de savoir s'il fallait recoller le
+    # fichier ou retirer une ligne du YAML.
+    origine = ("variable d'environnement" if "PLAFOND_ECRITURES" in os.environ
+               else "defaut du fichier")
+    if PLAFOND_JOUR <= 0:
+        print(f"budget : AUCUN plafond (controle desactive) — origine : {origine}"
+              f" · {besoin} lignes prevues sur {table}")
+        return True
+    print(f"budget : plafond {PLAFOND_JOUR} — origine : {origine}")
     deja = d1("SELECT COALESCE(SUM(lignes_ecrites), 0) AS n FROM runs "
-              "WHERE debut >= date('now')")[0]["results"][0]["n"] or 0
+              "WHERE debut >= date('now') AND (statut = 'OK' OR "
+              "(statut = 'EN COURS' AND debut >= datetime('now', '-2 hours')))"
+              )[0]["results"][0]["n"] or 0
     cout = besoin * (1 + INDEX.get(table, 0))
     print(f"budget : {deja} deja ecrites aujourd'hui, "
           f"{cout} prevues sur {table} (index compris), plafond {PLAFOND_JOUR}")
