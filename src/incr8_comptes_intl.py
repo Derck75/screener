@@ -19,6 +19,7 @@ sur une structure supposee est ce qui a coute six versions au chantier ESEF.
 """
 
 import argparse
+import html as _html
 import json
 import os
 import re
@@ -41,7 +42,11 @@ PLACE = {".PA": "epa", ".AS": "ams", ".BR": "ebr", ".LS": "els", ".IR": "dub",
          ".WA": "war", ".PR": "pra", ".BD": "bud", ".L": "lon", ".SW": "swx",
          ".T": "tyo"}
 
+# Le compte de resultat rendait zero poste sur MC.PA comme sur ASML.AS, alors
+# que bilan et flux fonctionnaient. Plusieurs chemins sont donc essayes et le
+# premier qui rend des lignes est retenu — on mesure au lieu de supposer.
 PAGES = {"": "resultat", "balance-sheet/": "bilan", "cash-flow-statement/": "flux"}
+CHEMINS_RESULTAT = ["", "income-statement/", "income/"]
 
 # Libelle servi -> poste du noyau. Le libelle est normalise (minuscules, sans
 # ponctuation) avant comparaison : StockAnalysis varie sur les majuscules.
@@ -69,8 +74,27 @@ POSTES = {
     "total debt": "debt",
     "cash equivalents": "cash", "cash and equivalents": "cash",
     "shareholders equity": "equity", "total equity": "equity",
-    "deferred revenue": "deferredRev",
+    "deferred revenue": "deferredRev", "unearned revenue": "deferredRev",
+    "earnings per share": "_eps",
+    # « Cash & Equivalents » et « Property, Plant & Equipment » : l'esperluette
+    # decodee laisse un « & » que la normalisation transforme en espace, d'ou
+    # ces formes avec et sans.
+    "cash equivalents": "cash", "cash short term investments": "cash",
+    "cash and equivalents": "cash", "cash amp equivalents": "cash",
+    "property plant equipment": "ppe", "property plant amp equipment": "ppe",
+    "property plant and equipment": "ppe",
+    "total current liabilities": "currentLiab",
+    "total liabilities": "_totalLiab",
+    "shareholders equity": "equity", "total equity": "equity",
+    "ebit": "ebit", "operating profit": "ebit",
+    "income before tax": "pretax", "pretax income": "pretax",
+    "income tax expense": "tax",
+    "shares outstanding basic": "shares",
 }
+
+# Du plus long au plus court : « total current liabilities » doit gagner sur
+# un prefixe plus court qui le contiendrait.
+_POSTES_TRIES = sorted(POSTES, key=len, reverse=True)
 
 COLONNES = ["revenue", "netIncome", "ebit", "grossProfit", "cfo", "capex", "da",
             "ebitda", "sbc", "tax", "pretax", "amortAcq", "assets", "ppe",
@@ -95,9 +119,36 @@ def lire(url, s=None):
 
 
 def norm(t):
-    t = re.sub(r"<[^>]+>", " ", t)
+    """Normalise un libelle de ligne.
+
+    ENTITES DECODEES D'ABORD : « Cash & Equivalents » arrivait en
+    « cash amp equivalents » et ne correspondait a rien. C'est pourquoi `cash`
+    et `ppe` manquaient alors que le reste du bilan etait lu."""
+    t = _html.unescape(re.sub(r"<[^>]+>", " ", t))
     t = re.sub(r"[^\w\s]", " ", t.lower())
     return re.sub(r"\s+", " ", t).strip()
+
+
+def reconnaitre(libelle):
+    """Rend le poste du noyau, ou None.
+
+    RECONNAISSANCE PAR PREFIXE, pas par egalite. StockAnalysis colle la
+    variation au nom : « revenue revenue growth », « operating income
+    operating income growth ». Une egalite stricte ne trouvait rien sur toute
+    la page du compte de resultat — zero poste sur LVMH comme sur ASML.
+
+    Le prefixe doit finir la chaine ou etre suivi d'un espace : « receivables »
+    ne doit pas capturer « other receivables », qui est un autre poste.
+    Les libelles sont essayes du plus long au plus court, pour que
+    « total current liabilities » gagne sur « total current ».
+    """
+    if libelle in POSTES:
+        return POSTES[libelle]
+    for cle in _POSTES_TRIES:
+        if libelle.startswith(cle) and (len(libelle) == len(cle)
+                                        or libelle[len(cle)] == " "):
+            return POSTES[cle]
+    return None
 
 
 def nombre(t):
@@ -132,7 +183,7 @@ def extraire(html):
         cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, re.S)
         if len(cells) < 2:
             continue
-        poste = POSTES.get(norm(cells[0]))
+        poste = reconnaitre(norm(cells[0]))
         if not poste:
             continue
         for i, c in enumerate(cells):
@@ -172,6 +223,14 @@ def main():
             print(f"place inconnue pour {a.sonder}")
             sys.exit(1)
         total = {}
+        print("  essai des chemins du compte de resultat :")
+        for c in CHEMINS_RESULTAT:
+            u = f"https://stockanalysis.com/quote/{code}/{sym}/financials/{c}"
+            h = lire(u, s)
+            d = extraire(h) if h else {}
+            print(f"    /{c or '(racine)'} : {len(h) if h else 0} car., {len(d)} postes")
+            time.sleep(0.4)
+
         for chemin, nom in PAGES.items():
             url = f"https://stockanalysis.com/quote/{code}/{sym}/financials/{chemin}"
             html = lire(url, s)
@@ -193,7 +252,7 @@ def main():
                     if not lib:
                         continue
                     lus += 1
-                    if lib not in POSTES and len(inconnus) < 18:
+                    if reconnaitre(lib) is None and len(inconnus) < 18:
                         inconnus.append(lib)
                 print(f"  lignes de tableau lues : {lus}")
                 if inconnus:
