@@ -124,7 +124,8 @@ async function main() {
 
   phase("univers");
   const soc = {};
-  for (const l of (await d1("SELECT ticker, vaneck, vaneck_sorti_le FROM societe"))[0].results)
+  for (const l of (await d1("SELECT ticker, vaneck, vaneck_sorti_le, devise, pays_siege "
+                          + "FROM societe"))[0].results)
     soc[l.ticker] = l;
 
   phase("lecture comptes");
@@ -152,7 +153,10 @@ async function main() {
     }
     let der, R, P, epv;
     try {
-      der = derives(series, "USD");
+      // DEVISE REELLE, jamais "USD" en dur. Sans effet sur les ratios — ROIC,
+      // EPV rapportee au cours — mais faux des qu'une europeenne entre dans la
+      // base, et le noyau s'en sert pour ses controles de coherence.
+      der = derives(series, (soc[ticker] || {}).devise || "USD");
       R = roicRetenu(der);
       P = profilSociete(der, {});
       epv = ancrageEPV(der, null);
