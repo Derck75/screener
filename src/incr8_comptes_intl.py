@@ -146,6 +146,10 @@ def extraire(html):
             # Le controle d'unite de l'etage prix — cours x actions compare a
             # la capitalisation publiee — reste le filet si une place devait
             # servir une autre echelle.
+            # Le capex est servi NEGATIF (sortie de tresorerie). Le noyau
+            # attend une valeur positive, comme pour les deposants SEC.
+            if poste == "capex":
+                v = abs(v)
             out.setdefault(poste, {})[annees[i]] = v * 1e6
     return out
 
@@ -170,8 +174,35 @@ def main():
         total = {}
         for chemin, nom in PAGES.items():
             url = f"https://stockanalysis.com/quote/{code}/{sym}/financials/{chemin}"
-            d = extraire(lire(url, s))
-            print(f"  {nom:9} {len(d)} postes : {', '.join(sorted(d)) or '(aucun)'}")
+            html = lire(url, s)
+            d = extraire(html)
+            print(f"\n  --- {nom} ---")
+            print(f"  URL    : {url}")
+            print(f"  servi  : {len(html) if html else 0} caracteres")
+            print(f"  postes : {len(d)} — {', '.join(sorted(d)) or '(aucun)'}")
+            if html:
+                # Libelles de premiere colonne, reconnus ou non. C'est la seule
+                # facon de savoir si la page est vide, si elle a change de forme,
+                # ou si ce sont nos libelles qui ne correspondent plus.
+                lus, inconnus = 0, []
+                for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S):
+                    c = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, re.S)
+                    if len(c) < 2:
+                        continue
+                    lib = norm(c[0])
+                    if not lib:
+                        continue
+                    lus += 1
+                    if lib not in POSTES and len(inconnus) < 18:
+                        inconnus.append(lib)
+                print(f"  lignes de tableau lues : {lus}")
+                if inconnus:
+                    print(f"  libelles NON reconnus  : {' | '.join(inconnus)}")
+                if not lus:
+                    ent = re.findall(r"<th[^>]*>(.*?)</th>", html, re.S)[:6]
+                    print(f"  en-tetes trouves       : {[norm(x) for x in ent]}")
+                    print(f"  extrait                : "
+                          f"{re.sub(r'<[^>]+>', ' ', html[:300])[:180]}")
             for k, v in d.items():
                 total.setdefault(k, {}).update(v)
             time.sleep(0.5)
