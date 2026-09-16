@@ -40,6 +40,18 @@ SEC_UA = os.environ.get("SEC_UA", "screener-perso contact@example.com")
 SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik}.json"
 LOT = int(os.environ.get("LOT_SIEGE", "1200"))
 
+# CODES a deux lettres des Etats et territoires americains. La SEC sert un
+# CODE (« FL »), pas un libelle (« Florida ») : chercher le libelle rendait
+# tout inconnu et classait 2 124 societes sur 2 255 hors des Etats-Unis.
+# Les deux formes sont desormais acceptees.
+CODES_US = {
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI",
+    "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN",
+    "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH",
+    "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA",
+    "WV", "WI", "WY", "PR", "GU", "VI", "AS", "MP",
+}
+
 # Etats et territoires des Etats-Unis. Tout libelle absent de cette liste est
 # un pays etranger. L'inverse — une liste de pays — serait toujours incomplete.
 ETATS_US = {
@@ -93,24 +105,36 @@ def siege(cik, s):
         return None, type(e).__name__
 
     adr = ((j.get("addresses") or {}).get("business") or {})
+    # La description est preferee quand elle existe — « Cayman Islands » vaut
+    # mieux que « E9 » a l'affichage — mais le code est ce qui est reellement
+    # servi dans la plupart des depots.
     lib = (adr.get("stateOrCountryDescription") or "").strip()
-    if not lib:
+    code_brut = (adr.get("stateOrCountry") or "").strip().upper()
+    if not lib and not code_brut:
         return None, "adresse absente"
-    bas = lib.lower()
-    if bas in ETATS_US:
+
+    if code_brut in CODES_US:
+        return "US", lib or code_brut
+    if lib and lib.lower() in ETATS_US:
         return "US", lib
-    code = PAYS.get(bas)
-    if code:
-        return code, lib
-    # Libelle inconnu : on ne suppose SURTOUT pas « US » — c'est l'erreur
-    # d'origine. On enregistre le libelle tel quel pour l'ajouter a la table.
-    s.erreur("pays_inconnu", lib)
-    return "??", lib
+
+    if lib:
+        c = PAYS.get(lib.lower())
+        if c:
+            return c, lib
+    # Code etranger non traduit : on le garde TEL QUEL plutot que d'inventer
+    # une correspondance. L'essentiel — hors des Etats-Unis — est etabli, et
+    # le code reste lisible pour completer la table plus tard.
+    if code_brut and len(code_brut) <= 3:
+        s.compte("code_non_traduit")
+        return code_brut, lib or code_brut
+    s.erreur("pays_inconnu", lib or code_brut)
+    return "??", lib or code_brut
 
 
 def main():
     s = sonde("incr9_siege")
-    print(f"incr9_siege v1 — Run {RUN_TS}")
+    print(f"incr9_siege v2 — Run {RUN_TS}")
 
     s.phase("cibles")
     # Seules les societes analysables et jamais resolues. `source_eligibilite`
@@ -148,7 +172,7 @@ def main():
     # Temoin : Apple doit ressortir en Californie. Si le champ lu n'est plus
     # celui qu'on croit, ce controle le dit avant d'ecrire 1 200 lignes.
     temoin = next((c for t, c, _ in maj if t == "AAPL"), None)
-    if temoin and temoin != "US":
+    if temoin is not None and temoin != "US":
         msg = f"canari rouge : AAPL siege = {temoin}"
         print("PANNE : " + msg)
         s.afficher()
