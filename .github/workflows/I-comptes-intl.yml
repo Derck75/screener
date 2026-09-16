@@ -1,0 +1,44 @@
+name: I comptes internationaux
+on:
+  workflow_dispatch:
+    inputs:
+      sonder:
+        description: 'Un ticker pour verifier l extraction sans rien ecrire, ex MC.PA'
+        required: false
+        default: ''
+      tranche:
+        description: 'Numero de tranche (1, 2, 3...). 0 = toutes, deconseille'
+        required: false
+        default: '1'
+      taille:
+        description: 'Societes par tranche'
+        required: false
+        default: '150'
+      places:
+        description: 'Suffixes Yahoo, ex .PA,.AS — vide = toutes'
+        required: false
+        default: ''
+
+jobs:
+  comptes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - name: Comptes internationaux
+        env:
+          CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          PLAFOND_ECRITURES: "0"
+          PYTHONUNBUFFERED: "1"
+        run: >
+          python src/incr8_comptes_intl.py
+          --sonder "${{ inputs.sonder }}"
+          --tranche ${{ inputs.tranche || 1 }}
+          --taille ${{ inputs.taille || 150 }}
+          --places "${{ inputs.places }}"
