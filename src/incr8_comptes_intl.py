@@ -241,13 +241,14 @@ def extraire(html, page=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sonder", default="", help="un ticker : affiche ce qui est extrait, n'ecrit rien")
-    ap.add_argument("--tranche", type=int, default=0, help="numero de tranche, 0 = toutes")
+    ap.add_argument("--tranche", type=int, default=0,
+                    help="numero de tranche ; 0 = mode file, avance tout seul")
     ap.add_argument("--taille", type=int, default=150, help="societes par tranche")
     ap.add_argument("--places", default="", help="suffixes Yahoo, ex .PA,.AS")
     a = ap.parse_args()
 
     s = sonde(f"incr8_comptes_intl_t{a.tranche}")
-    print(f"incr8_comptes_intl v5 — Run {RUN_TS}")
+    print(f"incr8_comptes_intl v6 — Run {RUN_TS}")
 
     if a.sonder:
         suf = "." + a.sonder.split(".")[-1] if "." in a.sonder else ""
@@ -320,11 +321,21 @@ def main():
     else:
         params = []
     cibles = [l["ticker"] for l in d1(
-        f"SELECT ticker FROM societe s WHERE {W} ORDER BY capitalisation DESC",
+        f"SELECT s.ticker, "
+        f"(SELECT COUNT(*) FROM comptes2 c WHERE c.ticker = s.ticker) AS n "
+        f"FROM societe s WHERE {W} "
+        f"ORDER BY n ASC, s.capitalisation DESC",
         params)[0]["results"]]
+    total_file = len(cibles)
     if a.tranche:
+        # Tranche explicite : comportement d'origine, utile pour rejouer.
         d = (a.tranche - 1) * a.taille
         cibles = cibles[d:d + a.taille]
+    else:
+        # Mode file : on prend simplement les premieres, c'est-a-dire celles
+        # qui n'ont aucun compte.
+        cibles = cibles[:a.taille]
+    print(f"  file totale : {total_file} societes restantes")
     print(f"  {len(cibles)} societes a traiter")
     if not cibles:
         journal("OK", s.etape, 0, "VERT", "aucune cible", s.resume())
@@ -402,9 +413,17 @@ def main():
                lot, lignes=len(lot), table="societe")
         s.compte("marquees_sans_page", len(sans_page))
 
+    reste = d1(f"SELECT COUNT(*) AS n FROM societe s WHERE {W} "
+               f"AND NOT EXISTS (SELECT 1 FROM comptes2 c WHERE c.ticker = s.ticker)",
+               params)[0]["results"][0]["n"]
+    print(f"\n  reste sans comptes : {reste}"
+          + ("  — relancer" if reste else "  — file vide"))
+    s.compte("reste_file", reste)
+
     r = s.afficher()
     journal("OK", s.etape, n, "VERT",
-            f"{n} lignes, {s.compteurs.get('societes_lues', 0)} societes", r)
+            f"{n} lignes, {s.compteurs.get('societes_lues', 0)} societes, "
+            f"{reste} restantes", r)
     print("OK")
 
 
