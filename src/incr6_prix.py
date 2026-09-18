@@ -45,6 +45,26 @@ CHART = ("https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
 # change rien. Les listes StockAnalysis repondent — et portent DEJA le cours
 # et la capitalisation. Quelques requetes remplacent 710 appels individuels.
 LISTES_US = ["nyse-stocks", "nasdaq-stocks", "nyseamerican-stocks"]
+
+# Places internationales : (chemin de liste, suffixe Yahoo). Sans elles, les
+# 1 894 societes ecrites par l'univers international n'ont aucun cours, donc
+# aucune EPV, donc restent invisibles au tri par cherte — la moitie du
+# dispositif serait inerte.
+# Le suffixe convertit le symbole LOCAL servi par la liste (« MC ») vers le
+# ticker de la base (« MC.PA »), exactement comme a l'ingestion de l'univers.
+LISTES_INTL = [
+    ("euronext-paris", ".PA"), ("euronext-amsterdam", ".AS"),
+    ("euronext-brussels", ".BR"), ("euronext-lisbon", ".LS"),
+    ("euronext-dublin", ".IR"), ("deutsche-boerse-xetra", ".DE"),
+    ("borsa-italiana", ".MI"), ("madrid-stock-exchange", ".MC"),
+    ("vienna-stock-exchange", ".VI"), ("athens-stock-exchange", ".AT"),
+    ("nasdaq-stockholm", ".ST"), ("copenhagen-stock-exchange", ".CO"),
+    ("nasdaq-helsinki", ".HE"), ("oslo-bors", ".OL"),
+    ("nasdaq-iceland", ".IC"), ("warsaw-stock-exchange", ".WA"),
+    ("prague-stock-exchange", ".PR"), ("budapest-stock-exchange", ".BD"),
+    ("london-stock-exchange", ".L"), ("six-swiss-exchange", ".SW"),
+    ("tokyo-stock-exchange", ".T"),
+]
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
@@ -249,7 +269,7 @@ def cours_depuis_listes(s):
     construction, quelle que soit leur valeur reelle.
     """
     out = {}
-    for chemin in LISTES_US:
+    for chemin, suffixe in [(c, "") for c in LISTES_US] + LISTES_INTL:
         pages = pages_liste(chemin, s)
         if not pages:
             continue
@@ -280,9 +300,11 @@ def cours_depuis_listes(s):
                     cap = float(m.group(1).replace(",", "")) * {
                         "T": 1e12, "B": 1e9, "M": 1e6, "K": 1e3}.get(
                         (m.group(2) or "").upper(), 1)
-            out[c[i_sym].upper().replace(".", "-")] = (px, cap)
+            # Le ticker de la base porte le suffixe de sa place ; le point
+            # d'une classe d'actions devient un tiret, comme partout ailleurs.
+            out[c[i_sym].upper().replace(".", "-") + suffixe] = (px, cap)
             n += 1
-        print(f"  {chemin} : {n} cours")
+        print(f"  {chemin}{' ' + suffixe if suffixe else ''} : {n} cours")
         s.compte("cours_lus", n)
         time.sleep(0.8)
     return out
@@ -344,7 +366,7 @@ def main():
               f"{_b.count(chr(10).encode()) + 1} lignes")
     except OSError:
         print("empreinte indisponible")
-    print(f"incr6_prix v6 — Run {RUN_TS}"
+    print(f"incr6_prix v7 — Run {RUN_TS}"
           + (f" — tranche {a.tranche}/{a.nb_tranches}" if a.tranche else ""))
 
     # ---- diagnostic demande : pourquoi la moitie de l'univers est ecartee ----
@@ -393,6 +415,8 @@ def main():
     s.phase("cotations")
     table = cours_depuis_listes(s)
     print(f"  {len(table)} cours disponibles")
+    intl = sum(1 for k in table if "." in k)
+    print(f"    dont {intl} hors des Etats-Unis")
 
     # ---- REPLI PAR TICKER, POUR CE QUE LES LISTES N'ONT PAS SERVI -----------
     # La pagination ci-dessus repose sur une forme d'URL decouverte a
@@ -506,10 +530,13 @@ def main():
     print(f"  {len(maj)} cotations exploitables, {echecs} echecs")
 
     # ---- canari -------------------------------------------------------------
+    # Seuil abaisse a 35 % : l'univers melange desormais des places dont la
+    # liste peut etre momentanement muette. Une couverture partielle n'est pas
+    # une panne de source — le detail par place, affiche plus haut, le dit.
     if a.tranche and CANARI_TICKER not in cibles:
         cours_canari = CANARI_COURS_MIN + 1   # le temoin n'est pas dans cette tranche
     if cours_canari is None or cours_canari < CANARI_COURS_MIN or \
-       len(maj) < 0.5 * len(cibles):
+       len(maj) < 0.35 * len(cibles):
         msg = (f"canari rouge : {CANARI_TICKER} = {cours_canari}, "
                f"{len(maj)}/{len(cibles)} cotations")
         print("PANNE : " + msg)
