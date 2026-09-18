@@ -204,6 +204,18 @@ PAGINATIONS = ["?p={n}", "?page={n}", "?r=500&p={n}"]
 PAGES_MAX = 12
 
 
+# Les listes americaines lient en /stocks/AAPL/, les internationales en
+# /quote/epa/MC/. Chercher un seul format faisait conclure a « page unique
+# (4 symboles) » sur toutes les places europeennes — quatre liens residuels
+# de menu — et plafonnait Paris, Xetra, Milan, Vienne, Londres et Tokyo a
+# 500 valeurs chacune.
+_LIENS = re.compile(r"/(?:stocks|quote/[a-z]+)/([A-Za-z0-9.\-]+)/")
+
+
+def symboles(html):
+    return set(m.upper() for m in _LIENS.findall(html or ""))
+
+
 def pages_liste(chemin, s):
     """Rend la liste des pages HTML d'une cotation, pagination COMPRISE.
 
@@ -225,14 +237,14 @@ def pages_liste(chemin, s):
     p1 = lire_liste(base, s)
     if not p1:
         return []
-    pages, vus = [p1], set(re.findall(r"/stocks/([a-z.\-]+)/", p1, re.I))
+    pages, vus = [p1], symboles(p1)
     forme = None
 
     for cand in PAGINATIONS:
         essai = lire_liste(base + cand.format(n=2), s)
         if not essai:
             continue
-        neufs = set(re.findall(r"/stocks/([a-z.\-]+)/", essai, re.I)) - vus
+        neufs = symboles(essai) - vus
         if len(neufs) >= 20:
             forme, pages, vus = cand, pages + [essai], vus | neufs
             print(f"  {chemin} : pagination « {cand} » — {len(neufs)} symboles neufs en page 2")
@@ -248,7 +260,7 @@ def pages_liste(chemin, s):
         h = lire_liste(base + forme.format(n=n), s)
         if not h:
             break
-        neufs = set(re.findall(r"/stocks/([a-z.\-]+)/", h, re.I)) - vus
+        neufs = symboles(h) - vus
         if not neufs:
             break
         pages.append(h); vus |= neufs; n += 1
@@ -366,7 +378,7 @@ def main():
               f"{_b.count(chr(10).encode()) + 1} lignes")
     except OSError:
         print("empreinte indisponible")
-    print(f"incr6_prix v7 — Run {RUN_TS}"
+    print(f"incr6_prix v8 — Run {RUN_TS}"
           + (f" — tranche {a.tranche}/{a.nb_tranches}" if a.tranche else ""))
 
     # ---- diagnostic demande : pourquoi la moitie de l'univers est ecartee ----
