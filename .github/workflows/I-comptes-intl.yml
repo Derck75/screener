@@ -1,36 +1,43 @@
 name: I comptes internationaux
 on:
+  # Toutes les deux heures. En mode file, chaque passage prend les societes
+  # qui n'ont encore aucun compte : l'ingestion se termine seule, sans avoir
+  # a piloter des numeros de tranche a la main.
+  schedule:
+    - cron: '13 */2 * * *'
   workflow_dispatch:
     inputs:
       sonder:
         description: 'Un ticker pour verifier l extraction sans rien ecrire, ex MC.PA'
         required: false
         default: ''
-      tranche:
-        description: 'Numero de tranche (1, 2, 3...)'
-        required: false
-        default: '1'
       taille:
-        description: 'Societes par tranche'
+        description: 'Societes par passage'
         required: false
         default: '80'
       places:
         description: 'Suffixes Yahoo, ex .PA,.AS — vide = toutes'
         required: false
         default: ''
+      tranche:
+        description: 'Numero de tranche pour rejouer une plage. 0 = mode file'
+        required: false
+        default: '0'
       pause:
-        description: 'Secondes entre requetes. 1.0 evite les refus de debit'
+        description: 'Secondes entre requetes'
         required: false
         default: '1.0'
 
 concurrency:
-  group: screener-ecriture
+  # Deux passages simultanes frapperaient la source en double et se
+  # disputeraient les memes lignes : le second attend son tour.
+  group: screener-intl
   cancel-in-progress: false
 
 jobs:
   comptes:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -48,6 +55,6 @@ jobs:
         run: >
           python src/incr8_comptes_intl.py
           --sonder "${{ inputs.sonder }}"
-          --tranche ${{ inputs.tranche || 1 }}
+          --tranche ${{ inputs.tranche || 0 }}
           --taille ${{ inputs.taille || 80 }}
           --places "${{ inputs.places }}"
