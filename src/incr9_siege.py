@@ -113,7 +113,10 @@ def siege(cik, s):
     lib = (adr.get("stateOrCountryDescription") or "").strip()
     code_brut = (adr.get("stateOrCountry") or "").strip().upper()
     if not lib and not code_brut:
-        return None, "adresse absente"
+        s.compte("sans_adresse")
+        # Marque plutot que None : sans cela, ces depots sont reinterroges a
+        # chaque run et le compteur « reste a resoudre » ne descend jamais.
+        return "--", "adresse absente"
 
     if code_brut in CODES_US:
         return "US", lib or code_brut
@@ -141,7 +144,7 @@ def siege(cik, s):
 
 def main():
     s = sonde("incr9_siege")
-    print(f"incr9_siege v3 — Run {RUN_TS}")
+    print(f"incr9_siege v4 — Run {RUN_TS}")
 
     s.phase("cibles")
     # Seules les societes analysables et jamais resolues. `source_eligibilite`
@@ -166,7 +169,7 @@ def main():
         time.sleep(0.15)          # SEC : 10 requetes par seconde maximum
         if code is None:
             continue
-        if code != "US":
+        if code not in ("US", "--"):
             etrangeres += 1
             s.compte("etranger_" + code)
         maj.append((l["ticker"], code, lib))
