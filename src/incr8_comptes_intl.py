@@ -247,7 +247,7 @@ def main():
     a = ap.parse_args()
 
     s = sonde(f"incr8_comptes_intl_t{a.tranche}")
-    print(f"incr8_comptes_intl v4 — Run {RUN_TS}")
+    print(f"incr8_comptes_intl v5 — Run {RUN_TS}")
 
     if a.sonder:
         suf = "." + a.sonder.split(".")[-1] if "." in a.sonder else ""
@@ -308,7 +308,11 @@ def main():
         return
 
     s.phase("cibles")
-    W = "s.origine LIKE '%intl%' AND s.cik IS NULL"
+    # `sans_sa` : societes dont la source ne publie aucune page — cotations
+    # secondaires pour l'essentiel. Les reinterroger coute trois requetes par
+    # tranche sans jamais rien rendre.
+    W = ("s.origine LIKE '%intl%' AND s.cik IS NULL "
+         "AND instr(COALESCE(s.origine, ''), 'sans_sa') = 0")
     if a.places:
         suf = [p.strip() for p in a.places.split(",") if p.strip()]
         W += " AND (" + " OR ".join("s.ticker LIKE ?" for _ in suf) + ")"
@@ -327,7 +331,7 @@ def main():
         return
 
     s.phase("collecte")
-    rangs = {}
+    rangs, sans_page = {}, []
     for i, t in enumerate(cibles, 1):
         suf = "." + t.split(".")[-1]
         code, sym = PLACE.get(suf), t.split(".")[0].replace("-", ".")
@@ -343,6 +347,7 @@ def main():
             time.sleep(PAUSE)
         if not total.get("revenue"):
             s.erreur("sans_revenue", t)
+            sans_page.append(t)
             continue
         s.compte("societes_lues")
         for annee in sorted({x for v in total.values() for x in v}):
@@ -382,6 +387,20 @@ def main():
     else:
         n = 0
         print("  rien a ecrire")
+
+    # Le marquage passe par `origine`, deja porteur de la provenance : aucune
+    # colonne nouvelle, et la requete de cibles les ecarte au tour suivant.
+    if sans_page:
+        s.phase("marquage")
+        print(f"  {len(sans_page)} societes sans page — marquees pour ne plus "
+              f"etre interrogees")
+        for i in range(0, len(sans_page), 20):
+            lot = sans_page[i:i + 20]
+            d1("UPDATE societe SET origine = COALESCE(origine, '') || ',sans_sa' "
+               "WHERE ticker IN (" + ", ".join("?" * len(lot)) + ") "
+               "AND (origine IS NULL OR instr(origine, 'sans_sa') = 0)",
+               lot, lignes=len(lot), table="societe")
+        s.compte("marquees_sans_page", len(sans_page))
 
     r = s.afficher()
     journal("OK", s.etape, n, "VERT",
