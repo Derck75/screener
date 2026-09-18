@@ -7,17 +7,25 @@ on:
         required: false
         default: ''
       tranche:
-        description: 'Numero de tranche (1, 2, 3...). 0 = toutes, deconseille'
+        description: 'Numero de tranche (1, 2, 3...)'
         required: false
         default: '1'
       taille:
         description: 'Societes par tranche'
         required: false
-        default: '150'
+        default: '80'
       places:
         description: 'Suffixes Yahoo, ex .PA,.AS — vide = toutes'
         required: false
         default: ''
+      pause:
+        description: 'Secondes entre requetes. 1.0 evite les refus de debit'
+        required: false
+        default: '1.0'
+
+concurrency:
+  group: screener-ecriture
+  cancel-in-progress: false
 
 jobs:
   comptes:
@@ -35,10 +43,11 @@ jobs:
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
           PLAFOND_ECRITURES: "0"
+          PAUSE_SA: ${{ inputs.pause || '1.0' }}
           PYTHONUNBUFFERED: "1"
         run: >
           python src/incr8_comptes_intl.py
           --sonder "${{ inputs.sonder }}"
           --tranche ${{ inputs.tranche || 1 }}
-          --taille ${{ inputs.taille || 150 }}
+          --taille ${{ inputs.taille || 80 }}
           --places "${{ inputs.places }}"
