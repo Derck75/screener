@@ -46,6 +46,15 @@ PLACE = {".PA": "epa", ".AS": "ams", ".BR": "ebr", ".LS": "els", ".IR": "dub",
 # que bilan et flux fonctionnaient. Plusieurs chemins sont donc essayes et le
 # premier qui rend des lignes est retenu — on mesure au lieu de supposer.
 PAGES = {"": "resultat", "balance-sheet/": "bilan", "cash-flow-statement/": "flux"}
+
+PORTEE = {
+    "resultat": {"revenue", "grossProfit", "ebit", "netIncome", "tax",
+                 "pretax", "ebitda", "shares"},
+    "bilan": {"assets", "ppe", "intangTot", "intangExGW", "goodwill",
+              "receivables", "inventory", "payables", "currentLiab", "debt",
+              "cash", "equity", "deferredRev", "deferredRevNC"},
+    "flux": {"cfo", "capex", "da", "sbc", "amortAcq"},
+}
 CHEMINS_RESULTAT = ["", "income-statement/", "income/"]
 
 # Libelle servi -> poste du noyau. Le libelle est normalise (minuscules, sans
@@ -75,7 +84,6 @@ POSTES = {
     "cash equivalents": "cash", "cash and equivalents": "cash",
     "shareholders equity": "equity", "total equity": "equity",
     "deferred revenue": "deferredRev", "unearned revenue": "deferredRev",
-    "earnings per share": "_eps",
     # « Cash & Equivalents » et « Property, Plant & Equipment » : l'esperluette
     # decodee laisse un « & » que la normalisation transforme en espace, d'ou
     # ces formes avec et sans.
@@ -84,7 +92,6 @@ POSTES = {
     "property plant equipment": "ppe", "property plant amp equipment": "ppe",
     "property plant and equipment": "ppe",
     "total current liabilities": "currentLiab",
-    "total liabilities": "_totalLiab",
     "shareholders equity": "equity", "total equity": "equity",
     "ebit": "ebit", "operating profit": "ebit",
     "income before tax": "pretax", "pretax income": "pretax",
@@ -164,7 +171,7 @@ def nombre(t):
     return -v if neg else v
 
 
-def extraire(html):
+def extraire(html, page=None):
     """Rend {poste: {annee: valeur}}. Les montants sont en MILLIONS chez
     StockAnalysis, sauf le nombre d'actions : remis en unites ici, sans quoi
     le noyau comparerait des grandeurs de deux ordres differents."""
@@ -185,6 +192,11 @@ def extraire(html):
             continue
         poste = reconnaitre(norm(cells[0]))
         if not poste:
+            continue
+        # Un poste lu hors de sa page est un faux positif de la reconnaissance
+        # par prefixe : « Total Liabilities and Equity » captait
+        # « total liabilities » et rendait le total de l'actif.
+        if page and poste not in PORTEE.get(page, set()):
             continue
         for i, c in enumerate(cells):
             if i >= len(annees) or annees[i] is None:
@@ -214,7 +226,7 @@ def main():
     a = ap.parse_args()
 
     s = sonde(f"incr8_comptes_intl_t{a.tranche}")
-    print(f"incr8_comptes_intl v1 — Run {RUN_TS}")
+    print(f"incr8_comptes_intl v2 — Run {RUN_TS}")
 
     if a.sonder:
         suf = "." + a.sonder.split(".")[-1] if "." in a.sonder else ""
@@ -227,14 +239,14 @@ def main():
         for c in CHEMINS_RESULTAT:
             u = f"https://stockanalysis.com/quote/{code}/{sym}/financials/{c}"
             h = lire(u, s)
-            d = extraire(h) if h else {}
+            d = extraire(h, "resultat") if h else {}
             print(f"    /{c or '(racine)'} : {len(h) if h else 0} car., {len(d)} postes")
             time.sleep(0.4)
 
         for chemin, nom in PAGES.items():
             url = f"https://stockanalysis.com/quote/{code}/{sym}/financials/{chemin}"
             html = lire(url, s)
-            d = extraire(html)
+            d = extraire(html, nom)
             print(f"\n  --- {nom} ---")
             print(f"  URL    : {url}")
             print(f"  servi  : {len(html) if html else 0} caracteres")
@@ -303,7 +315,8 @@ def main():
             continue
         total = {}
         for chemin in PAGES:
-            d = extraire(lire(f"https://stockanalysis.com/quote/{code}/{sym}/financials/{chemin}", s))
+            d = extraire(lire(f"https://stockanalysis.com/quote/{code}/{sym}/financials/{chemin}", s),
+                         PAGES[chemin])
             for k, v in d.items():
                 total.setdefault(k, {}).update(v)
             time.sleep(0.35)
