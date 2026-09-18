@@ -45,7 +45,12 @@ PLACE = {".PA": "epa", ".AS": "ams", ".BR": "ebr", ".LS": "els", ".IR": "dub",
 # Le compte de resultat rendait zero poste sur MC.PA comme sur ASML.AS, alors
 # que bilan et flux fonctionnaient. Plusieurs chemins sont donc essayes et le
 # premier qui rend des lignes est retenu — on mesure au lieu de supposer.
-PAGES = {"": "resultat", "balance-sheet/": "bilan", "cash-flow-statement/": "flux"}
+# Le compte de resultat se lit sur /income-statement/, PAS sur la racine :
+# l'essai des trois chemins a montre 8 postes contre 4. Les quatre de plus
+# — tax, pretax, ebitda, shares — portent le taux d'impot de l'EPV et le
+# controle d'unite du nombre d'actions.
+PAGES = {"income-statement/": "resultat", "balance-sheet/": "bilan",
+         "cash-flow-statement/": "flux"}
 
 PORTEE = {
     "resultat": {"revenue", "grossProfit", "ebit", "netIncome", "tax",
@@ -226,7 +231,7 @@ def main():
     a = ap.parse_args()
 
     s = sonde(f"incr8_comptes_intl_t{a.tranche}")
-    print(f"incr8_comptes_intl v2 — Run {RUN_TS}")
+    print(f"incr8_comptes_intl v3 — Run {RUN_TS}")
 
     if a.sonder:
         suf = "." + a.sonder.split(".")[-1] if "." in a.sonder else ""
