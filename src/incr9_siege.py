@@ -52,6 +52,8 @@ CODES_US = {
     "WV", "WI", "WY", "PR", "GU", "VI", "AS", "MP",
 }
 
+CODES_CANADA = {"A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "B0"}
+
 # Etats et territoires des Etats-Unis. Tout libelle absent de cette liste est
 # un pays etranger. L'inverse — une liste de pays — serait toujours incomplete.
 ETATS_US = {
@@ -115,6 +117,11 @@ def siege(cik, s):
 
     if code_brut in CODES_US:
         return "US", lib or code_brut
+    # Provinces canadiennes dans la nomenclature EDGAR : A0 Alberta,
+    # A1 Colombie-Britannique, A6 Ontario, A8 Quebec... Une vingtaine de
+    # societes ressortaient sous un code illisible.
+    if code_brut in CODES_CANADA:
+        return "CA", lib or "Canada"
     if lib and lib.lower() in ETATS_US:
         return "US", lib
 
@@ -134,7 +141,7 @@ def siege(cik, s):
 
 def main():
     s = sonde("incr9_siege")
-    print(f"incr9_siege v2 — Run {RUN_TS}")
+    print(f"incr9_siege v3 — Run {RUN_TS}")
 
     s.phase("cibles")
     # Seules les societes analysables et jamais resolues. `source_eligibilite`
