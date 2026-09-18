@@ -115,19 +115,35 @@ COLONNES = ["revenue", "netIncome", "ebit", "grossProfit", "cfo", "capex", "da",
             "deferredRev", "deferredRevNC", "flottant"]
 
 
+PAUSE = float(os.environ.get("PAUSE_SA", "1.0"))
+
+
 def lire(url, s=None):
     req = urllib.request.Request(url, headers={"User-Agent": UA})
-    try:
-        with urllib.request.urlopen(req, timeout=40) as r:
-            return r.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as e:
-        if s and e.code != 404:
-            s.erreur(f"http_{e.code}", url[-50:])
-        return None
-    except Exception as e:
-        if s:
-            s.erreur("reseau_sa", f"{type(e).__name__} {url[-40:]}")
-        return None
+    # REPRISE SUR 429. Trois pages par societe a 0,35 s frappaient la source a
+    # plus de deux requetes par seconde : 270 refus sur une tranche de 150, et
+    # seules 35 societes lues. Une attente croissante rattrape ces refus au
+    # lieu de perdre la societe.
+    for essai in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=40) as r:
+                return r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                if s:
+                    s.compte("429_rattrape")
+                time.sleep(8 * (essai + 1))
+                continue
+            if s and e.code != 404:
+                s.erreur(f"http_{e.code}", url[-50:])
+            return None
+        except Exception as e:
+            if s:
+                s.erreur("reseau_sa", f"{type(e).__name__} {url[-40:]}")
+            return None
+    if s:
+        s.erreur("http_429_abandon", url[-50:])
+    return None
 
 
 def norm(t):
@@ -231,7 +247,7 @@ def main():
     a = ap.parse_args()
 
     s = sonde(f"incr8_comptes_intl_t{a.tranche}")
-    print(f"incr8_comptes_intl v3 — Run {RUN_TS}")
+    print(f"incr8_comptes_intl v4 — Run {RUN_TS}")
 
     if a.sonder:
         suf = "." + a.sonder.split(".")[-1] if "." in a.sonder else ""
@@ -246,7 +262,7 @@ def main():
             h = lire(u, s)
             d = extraire(h, "resultat") if h else {}
             print(f"    /{c or '(racine)'} : {len(h) if h else 0} car., {len(d)} postes")
-            time.sleep(0.4)
+            time.sleep(PAUSE)
 
         for chemin, nom in PAGES.items():
             url = f"https://stockanalysis.com/quote/{code}/{sym}/financials/{chemin}"
@@ -281,7 +297,7 @@ def main():
                           f"{re.sub(r'<[^>]+>', ' ', html[:300])[:180]}")
             for k, v in d.items():
                 total.setdefault(k, {}).update(v)
-            time.sleep(0.5)
+            time.sleep(PAUSE)
         print(f"\n{len(total)} postes distincts")
         for k in sorted(total):
             ans = sorted(total[k])
@@ -324,7 +340,7 @@ def main():
                          PAGES[chemin])
             for k, v in d.items():
                 total.setdefault(k, {}).update(v)
-            time.sleep(0.35)
+            time.sleep(PAUSE)
         if not total.get("revenue"):
             s.erreur("sans_revenue", t)
             continue
