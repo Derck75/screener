@@ -1,0 +1,44 @@
+name: L discord
+on:
+  # Dimanche 18 h UTC. Une cadence hebdomadaire, jamais quotidienne : un
+  # screener quality-growth converge, et un flux quotidien produirait surtout
+  # de la pression a agir sur un portefeuille qui n'a pas de place.
+  schedule:
+    - cron: '0 18 * * 0'
+  # Verification de l'exception chaque jour a 17 h, sans message hebdomadaire.
+    - cron: '0 17 * * 1-6'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Mode'
+        required: false
+        default: hebdo
+        type: choice
+        options:
+          - hebdo
+          - amorcage
+          - exception
+
+jobs:
+  discord:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - name: Notification Discord
+        env:
+          CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          PLAFOND_ECRITURES: "0"
+          PYTHONUNBUFFERED: "1"
+        run: >
+          python src/incr10_discord.py
+          ${{ inputs.mode == 'amorcage' && '--amorcage'
+           || (inputs.mode == 'exception' || github.event.schedule == '0 17 * * 1-6')
+              && '--exception-seule' || '' }}
