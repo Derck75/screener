@@ -1,0 +1,47 @@
+name: M secteurs internationaux
+on:
+  # Toutes les six heures. La file se vide seule : une activite ne change pas,
+  # chaque societe n'est interrogee qu'une fois.
+  schedule:
+    - cron: '37 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      sonder:
+        description: 'Un ticker pour verifier sans rien ecrire, ex MC.PA'
+        required: false
+        default: ''
+      taille:
+        description: 'Societes par passage'
+        required: false
+        default: '200'
+      pause:
+        description: 'Secondes entre requetes'
+        required: false
+        default: '1.0'
+
+concurrency:
+  group: screener-intl
+  cancel-in-progress: false
+
+jobs:
+  secteurs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - name: Activite des societes internationales
+        env:
+          CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          PLAFOND_ECRITURES: "0"
+          PAUSE_SA: ${{ inputs.pause || '1.0' }}
+          PYTHONUNBUFFERED: "1"
+        run: >
+          python src/incr11_secteur_intl.py
+          --sonder "${{ inputs.sonder }}"
+          --taille ${{ inputs.taille || 200 }}
