@@ -13,7 +13,8 @@
  * Sonde integree, budget verifie, ecriture differentielle.
  */
 
-import { derives, roicRetenu, profilSociete, ancrageEPV, mediane } from './noyau.js';
+import { derives, roicRetenu, profilSociete, ancrageEPV, ancrageEVA, mediane }
+  from './noyau.js';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +37,15 @@ const PLAFOND_ORIGINE = (PLAFOND_BRUT === undefined || PLAFOND_BRUT === "")
   : `variable d'environnement PLAFOND_ECRITURES="${PLAFOND_BRUT}"`;
 const RUN_TS = new Date().toISOString().slice(0, 19) + "Z";
 const CANARI = ["AAPL", "MSFT", "V", "MA", "NVDA"];
+
+// Duree de fade de la brique EVA, deduite du score de moat PROXY. Le cadre
+// reserve vingt ans a un verdict Wide d'analyste ; un proxy ne l'autorise
+// pas — quinze ans est le maximum ici, et c'est deja genereux.
+function dureeFade(pts, max) {
+  if (!max) return 5;
+  const r = pts / max;
+  return r >= 0.8 ? 15 : r >= 0.5 ? 10 : 5;
+}
 
 const S = { t0: Date.now(), phases: {}, compteurs: {}, erreurs: {}, phase: null, pt: 0 };
 const phase = n => { if (S.phase) S.phases[S.phase] = Math.round((Date.now() - S.pt) / 100) / 10;
@@ -99,6 +109,7 @@ const COLONNES = ["roic_median", "roic_dernier", "spread_median", "n_ex_roic_sup
   "ca_hausse_n", "ca_hausse_m", "fcf_positif_n", "fcf_positif_m", "mb_mediane",
   "conversion_fcf_rn", "actions_var_5a", "dette_sur_ca", "cp_sur_ca", "score_moat",
   "score_moat_max", "biais_acquereur", "ebit_dispersion", "drapeaux",
+  "eva_capitaux", "eva_statut", "eva_h",
   "n_non_calculable", "exclusion", "maj"];
 
 /* EMPREINTE — met fin au debat « quel fichier tourne ? ».
@@ -117,7 +128,7 @@ function empreinte() {
 }
 
 async function main() {
-  console.log(`incr5_metriques v4 (noyau partage) — Run ${RUN_TS}`);
+  console.log(`incr5_metriques v5 (noyau partage) — Run ${RUN_TS}`);
   console.log(`empreinte ${empreinte()}`);
   console.log(`seuil de rentabilite forfaitaire : ${SEUIL} % — PAS un WACC`);
   console.log(`plafond d'ecritures : ${PLAFOND === 0 ? "AUCUN (controle desactive)" : PLAFOND} — origine : ${PLAFOND_ORIGINE}`);
@@ -254,6 +265,33 @@ async function main() {
     }
     if (drapeaux.length) compte("drapeau_" + drapeaux[0]);
 
+    // ── SECONDE MESURE : la brique EVA du noyau ──────────────────────────
+    // L'EPV suppose une croissance NULLE ; l'EVA fait croitre le capital et
+    // accumule le sur-profit pendant une duree de fade. Deux hypotheses
+    // opposees : leur ACCORD est le signal, jamais leur moyenne.
+    // Le taux-obstacle forfaitaire remplace le WACC — pas de beta, donc pas
+    // de bruit qui n'a rien a voir avec la qualite de la societe.
+    let evaCap = null, evaStatut = null, evaH = null;
+    const actionsDer = der1?.shares;
+    if (actionsDer > 0) {
+      evaH = dureeFade(pts, mx);
+      try {
+        const E = ancrageEVA(der, SEUIL / 100, evaH, actionsDer, { profil: P });
+        if (E?.ko) {
+          // Un refus de domaine est une INFORMATION, pas un echec : le noyau
+          // dit que le modele ne s'applique pas a cette societe.
+          evaStatut = String(E.ko).slice(0, 90);
+          compte("eva_refus");
+        } else if (Number.isFinite(E?.valeur)) {
+          evaCap = E.valeur * actionsDer;
+          evaStatut = "ok";
+          compte("eva_calculable");
+        }
+      } catch (e) { erreur("eva", `${ticker} ${e.message}`); }
+    } else {
+      evaStatut = "actions indisponibles";
+    }
+
     if (CANARI.includes(ticker)) etatCanari[ticker] = { roicMed, type: P.type, excl };
 
     const actS = srz("shares");
@@ -274,6 +312,7 @@ async function main() {
         (actS.length >= 2 && actS[0] > 0) ? 100 * (actS[actS.length - 1] / actS[0] - 1) : null,
       dette_sur_ca: detteCA, cp_sur_ca: cpCA,
       ebit_dispersion: ebitDisp, drapeaux: drapeaux.length ? drapeaux.join(",") : null,
+      eva_capitaux: evaCap, eva_statut: evaStatut, eva_h: evaH,
       score_moat: pts, score_moat_max: mx, biais_acquereur: biais,
       n_non_calculable: [roicMed, cg("ca"), cg("fcf"), mbMed].filter(x => x == null).length,
       exclusion: excl, maj: RUN_TS,
@@ -337,7 +376,7 @@ async function main() {
       const lot = aEcrire.slice(i, i + 100).map(([t, v]) =>
         "(" + tx(t) + ", " + COLONNES.map(c =>
           ["denominateur_roic", "base_roic", "profil_type", "profil_ko",
-           "drapeaux", "exclusion", "maj"].includes(c) ? tx(v[c]) : nb(v[c])).join(", ") + ")");
+           "drapeaux", "eva_statut", "exclusion", "maj"].includes(c) ? tx(v[c]) : nb(v[c])).join(", ") + ")");
       await d1(`INSERT OR REPLACE INTO metriques (${liste}) VALUES ` + lot.join(", "));
       if ((i + 100) % 1000 === 0) console.log(`  ecrit ${Math.min(i + 100, aEcrire.length)}/${aEcrire.length}`);
     }
