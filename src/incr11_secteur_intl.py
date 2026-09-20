@@ -38,7 +38,8 @@ PLACE = {".PA": "epa", ".AS": "ams", ".BR": "ebr", ".LS": "els", ".IR": "dub",
          ".DE": "etr", ".MI": "mil", ".MC": "bme", ".VI": "vie", ".AT": "ath",
          ".ST": "sto", ".CO": "cph", ".HE": "hel", ".OL": "osl", ".IC": "ice",
          ".WA": "war", ".PR": "pra", ".BD": "bud", ".L": "lon", ".SW": "swx",
-         ".T": "tyo"}
+         ".T": "tyo",
+         ".KS": "kos", ".TW": "twn", ".TO": "tor"}
 
 # Traduction des industries StockAnalysis les plus frequentes. Les autres
 # passent telles quelles : mieux vaut « Specialty Chemicals » que rien.
