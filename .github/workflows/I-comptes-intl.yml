@@ -49,7 +49,7 @@ jobs:
           CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          PLAFOND_ECRITURES: "0"
+          PLAFOND_ECRITURES: "70000"
           PAUSE_SA: ${{ inputs.pause || '1.0' }}
           PYTHONUNBUFFERED: "1"
         run: >
