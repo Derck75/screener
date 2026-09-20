@@ -2,6 +2,12 @@ name: K sieges
 on:
   workflow_dispatch:
     inputs:
+      rejouer:
+        description: 'Rejouer les societes deja resolues, pour rattraper l activite'
+        required: false
+        default: 'non'
+        type: choice
+        options: [non, oui]
       lot:
         description: 'Nombre de societes a resoudre par run'
         required: false
@@ -30,4 +36,4 @@ jobs:
           SEC_UA: ${{ secrets.SEC_UA }}
           LOT_SIEGE: ${{ inputs.lot || 1200 }}
           PYTHONUNBUFFERED: "1"
-        run: python src/incr9_siege.py
+        run: python src/incr9_siege.py ${{ inputs.rejouer == 'oui' && '--rejouer' || '' }}
