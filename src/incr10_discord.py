@@ -80,16 +80,75 @@ def envoyer(titre, corps, couleur):
     return False
 
 
+ACTIVITE = {
+    "services-prepackaged software": "Logiciel",
+    "services-computer programming, data processing, etc.": "Services numériques",
+    "pharmaceutical preparations": "Pharmacie",
+    "biological products, (no diagnostic substances)": "Biotechnologie",
+    "state commercial banks": "Banque",
+    "national commercial banks": "Banque",
+    "fire, marine & casualty insurance": "Assurance dommages",
+    "life insurance": "Assurance vie",
+    "steel works, blast furnaces & rolling mills (coke ovens)": "Sidérurgie",
+    "crude petroleum & natural gas": "Pétrole et gaz",
+    "semiconductors & related devices": "Semiconducteurs",
+    "retail-eating places": "Restauration",
+    "retail-variety stores": "Distribution",
+    "electric services": "Électricité",
+    "real estate investment trusts": "Foncière",
+    "motor vehicle parts & accessories": "Équipement automobile",
+    "aircraft & parts": "Aéronautique",
+    "surgical & medical instruments & apparatus": "Matériel médical",
+    "air transportation, scheduled": "Transport aérien",
+    "wholesale-drugs, proprietaries & druggists' sundries": "Distribution pharmaceutique",
+    "services-management consulting services": "Conseil",
+    "services-advertising agencies": "Publicité",
+    "blank checks": "Coquille",
+    "retail-apparel & accessory stores": "Habillement",
+    "bituminous coal & lignite surface mining": "Charbon",
+    "services-computer integrated systems design": "Services numériques",
+    "industrial organic chemicals": "Chimie",
+    "gold mining": "Mines d'or",
+    "hotels & motels": "Hôtellerie",
+    "cable & other pay television services": "Média",
+    "electronic components & accessories": "Composants électroniques",
+    "special industry machinery, nec": "Machines industrielles",
+    "wholesale-electronic parts & equipment, nec": "Distribution électronique",
+    "services-business services, nec": "Services aux entreprises",
+}
+
+
+def activite(brut):
+    if not brut:
+        return None
+    b = brut.strip().lower()
+    if b in ACTIVITE:
+        return ACTIVITE[b]
+    # Forme non traduite : on la raccourcit plutot que de l'ecarter. Mieux
+    # vaut « Steel Works » que rien.
+    court = brut.split(",")[0].split("(")[0].strip()
+    if len(court) > 38:
+        # Couper sur un espace : « Surface Mini » en plein mot est illisible.
+        court = court[:38].rsplit(" ", 1)[0] + "…"
+    return court or None
+
+
 def ligne(c):
     pays = c.get("pays_siege") or "?"
     pea = "PEA" if c.get("eligible_pea") == 1 else "CTO"
     ve = " · VanEck" if c.get("vaneck") else ""
     dr = " 🚩" + str(c["drapeaux"]).split(",")[0] if c.get("drapeaux") else ""
-    return (f"**{c['ticker']}** — {str(c.get('nom') or '')[:34]}\n"
-            f"EPV/cours **{round(100 * c['epv_sur_cours'])} %** · "
-            f"ROIC {round(c['roic_median'])} % sur {c['n_ex_total']} ex. · "
-            f"moat {c['score_moat']}/{c['score_moat_max']}\n"
-            f"{pea} · {pays}{ve}{dr}")
+    act = activite(c.get("secteur"))
+    # Le NOM d'abord, en gras : c'est ce qu'on lit. Le ticker suit, discret —
+    # il sert a interroger l'outil, pas a reconnaitre la societe.
+    t = (f"**{str(c.get('nom') or '')[:40]}**  `{c['ticker']}`\n"
+         + (f"{act}\n" if act else "")
+         # Formulation directe plutot que le sigle : « EPV/cours 60 % » ne dit
+         # rien tant qu'on n'a pas la definition en tete.
+         + f"Profits actuels : **{round(100 * c['epv_sur_cours'])} % du cours**\n"
+         + f"ROIC {round(c['roic_median'])} % sur {c['n_ex_total']} ex. · "
+         + f"moat {c['score_moat']}/{c['score_moat_max']} · {pea} · {pays}{ve}{dr}")
+    return t
 
 
 def main():
@@ -101,12 +160,12 @@ def main():
     a = ap.parse_args()
 
     s = sonde("incr10_discord")
-    print(f"incr10_discord v2 — Run {RUN_TS}")
+    print(f"incr10_discord v3 — Run {RUN_TS}")
 
     s.phase("lecture")
     base = ("FROM metriques m JOIN societe s ON s.ticker = m.ticker "
             "WHERE " + CANDIDATE)
-    champs = ("m.ticker, s.nom, s.pays_siege, s.eligible_pea, s.vaneck, "
+    champs = ("m.ticker, s.nom, s.pays_siege, s.eligible_pea, s.vaneck, s.secteur, "
               "m.epv_sur_cours, m.roic_median, m.n_ex_total, m.score_moat, "
               "m.score_moat_max, m.drapeaux")
     candidates = d1(f"SELECT {champs} {base} ORDER BY m.epv_sur_cours DESC"
@@ -188,8 +247,13 @@ def main():
                       f"pas affichées : au-delà de cinq, rien n'est actionnable. "
                       f"La liste complète reste accessible par "
                       f"`screener(preset:\"strict\")`.*")
-        corps += "\n\n🔴 **Watchlist, pas des idées.** Fenêtre courte hors " \
-                 "États-Unis, moat proxy, aucune fair value."
+        corps += ("\n\n*« Profits actuels » rapporte le pouvoir bénéficiaire "
+                  "— ce que vaudrait la société si elle cessait de croître — à "
+                  "ce que le marché la paie. À 60 %, six euros sur dix sont "
+                  "couverts par les profits déjà dégagés, quatre reposent sur "
+                  "une croissance à démontrer.*"
+                  "\n\n🔴 **Watchlist, pas des idées.** Fenêtre courte hors "
+                  "États-Unis, moat proxy, aucune fair value.")
         titre = "📋 Screener — nouvelles candidates"
         couleur = 0x3498db
     else:
