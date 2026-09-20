@@ -43,7 +43,8 @@ INDEX = "https://stockanalysis.com/list/"
 # ne change aucune decision ici, et le cours reel vient de Yahoo plus tard.
 EN_EUR = {"EUR": 1.0, "SEK": 0.090, "NOK": 0.085, "DKK": 0.134,
           "CHF": 1.07, "GBP": 1.17, "JPY": 0.0058, "PLN": 0.235,
-          "CZK": 0.040, "HUF": 0.0026, "ISK": 0.0068}
+          "CZK": 0.040, "HUF": 0.0026, "ISK": 0.0068,
+          "KRW": 0.00063, "TWD": 0.027, "CAD": 0.63}
 
 # Bandes de taille, en euros. Elles ne filtrent pas : elles ETIQUETTENT, pour
 # que la couverture des donnees se mesure bande par bande. C'est ce qui dira
@@ -79,6 +80,11 @@ PLACES = {
     "lon": (".L",  "GB", False, "GBP", ["london-stock-exchange"]),
     "swx": (".SW", "CH", False, "CHF", ["six-swiss-exchange"]),
     "tyo": (".T",  "JP", False, "JPY", ["tokyo-stock-exchange"]),
+    # Ajoutees apres la mise en service : Samsung, TSMC, Constellation
+    # Software. Hors PEA, meme mecanique que les autres places.
+    "kos": (".KS", "KR", False, "KRW", ["korea-stock-exchange"]),
+    "twn": (".TW", "TW", False, "TWD", ["taiwan-stock-exchange"]),
+    "tor": (".TO", "CA", False, "CAD", ["toronto-stock-exchange"]),
 }
 # ECARTEES VOLONTAIREMENT : frankfurt, dusseldorf, hamburg, munich, stuttgart
 # dupliquent Xetra sur les memes societes ; london-stock-exchange-aim et
