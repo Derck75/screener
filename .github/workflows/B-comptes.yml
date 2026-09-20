@@ -36,6 +36,7 @@ jobs:
           CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          PLAFOND_ECRITURES: "70000"
           SEC_UA: ${{ secrets.SEC_UA }}
           EXERCICES: ${{ matrix.exercice }}
           PYTHONUNBUFFERED: '1'
@@ -56,6 +57,7 @@ jobs:
           CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          PLAFOND_ECRITURES: "70000"
           PYTHONUNBUFFERED: '1'
         run: |
           python - <<'PY'
