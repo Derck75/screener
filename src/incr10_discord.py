@@ -63,9 +63,13 @@ def envoyer(titre, corps, couleur):
         return False
     charge = {"embeds": [{"title": titre, "description": corps[:3900],
                           "color": couleur}]}
+    # USER-AGENT OBLIGATOIRE. L'API Discord est derriere Cloudflare, qui
+    # refuse la signature par defaut de Python : HTTP 403, « error code 1010 ».
+    # Le message ne vient pas de Discord mais de sa protection.
     req = urllib.request.Request(
         WEBHOOK, data=json.dumps(charge).encode(),
-        headers={"Content-Type": "application/json"})
+        headers={"Content-Type": "application/json",
+                 "User-Agent": "screener-rayane (github-actions, python)"})
     try:
         urllib.request.urlopen(req, timeout=20)
         return True
@@ -97,7 +101,7 @@ def main():
     a = ap.parse_args()
 
     s = sonde("incr10_discord")
-    print(f"incr10_discord v1 — Run {RUN_TS}")
+    print(f"incr10_discord v2 — Run {RUN_TS}")
 
     s.phase("lecture")
     base = ("FROM metriques m JOIN societe s ON s.ticker = m.ticker "
