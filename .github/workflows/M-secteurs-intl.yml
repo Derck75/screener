@@ -6,6 +6,12 @@ on:
     - cron: '37 */6 * * *'
   workflow_dispatch:
     inputs:
+      retraduire:
+        description: 'Retraduire les libelles deja en base, sans requete reseau'
+        required: false
+        default: 'non'
+        type: choice
+        options: [non, oui]
       sonder:
         description: 'Un ticker pour verifier sans rien ecrire, ex MC.PA'
         required: false
@@ -45,3 +51,4 @@ jobs:
           python src/incr11_secteur_intl.py
           --sonder "${{ inputs.sonder }}"
           --taille ${{ inputs.taille || 200 }}
+          ${{ inputs.retraduire == 'oui' && '--retraduire' || '' }}
