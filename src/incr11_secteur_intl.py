@@ -104,6 +104,49 @@ FR = {
     "electrical equipment & parts": "Équipement électrique",
     "farm & heavy construction machinery": "Machines agricoles",
     "tobacco": "Tabac", "gambling": "Jeux d'argent",
+    # Libelles releves au premier passage. Les quatre premiers sont des
+    # SECTEURS et non des industries : pour ces societes, le motif « Industry »
+    # n'a pas trouve et le script est tombe sur « Sector ». Moins precis, mais
+    # mieux que rien.
+    "industrials": "Industrie", "technology": "Technologie",
+    "healthcare": "Santé", "financial services": "Services financiers",
+    "consumer cyclical": "Consommation cyclique",
+    "consumer defensive": "Consommation de base",
+    "basic materials": "Matériaux", "energy": "Énergie",
+    "utilities": "Services aux collectivités",
+    "communication services": "Communication",
+    "real estate": "Immobilier",
+    "electronic gaming & multimedia": "Jeux vidéo",
+    "leisure": "Loisirs",
+    "financial data & stock exchanges": "Données financières",
+    "business equipment & supplies": "Équipement de bureau",
+    "real estate - diversified": "Immobilier diversifié",
+    "building materials": "Matériaux de construction",
+    "industrial distribution": "Distribution industrielle",
+    "utilities - diversified": "Services aux collectivités",
+    "department stores": "Grands magasins",
+    "auto & truck dealerships": "Concessions automobiles",
+    "furnishings, fixtures & appliances": "Équipement de la maison",
+    "medical care facilities": "Établissements de santé",
+    "diagnostics & research": "Diagnostic et recherche",
+    "scientific & technical instruments": "Instruments scientifiques",
+    "pollution & treatment controls": "Traitement et dépollution",
+    "metal fabrication": "Transformation des métaux",
+    "trucking": "Transport routier",
+    "publishing": "Édition", "broadcasting": "Audiovisuel",
+    "credit services": "Crédit", "mortgage finance": "Crédit immobilier",
+    "solar": "Solaire", "uranium": "Uranium",
+    "agricultural inputs": "Intrants agricoles",
+    "farm products": "Produits agricoles",
+    "confectioners": "Confiserie",
+    "personal services": "Services à la personne",
+    "education & training services": "Formation",
+    "travel services": "Voyages",
+    "resorts & casinos": "Casinos et resorts",
+    "specialty business services": "Services spécialisés",
+    "rental & leasing services": "Location",
+    "infrastructure operations": "Infrastructures",
+    "shell companies": "Coquille",
 }
 
 # Trois formes d'affichage possibles selon les millesimes du site. Toutes sont
@@ -178,6 +221,9 @@ def main():
     ap.add_argument("--taille", type=int, default=200)
     ap.add_argument("--avec-comptes", action="store_true", default=True,
                     help="limite aux societes ayant des comptes")
+    ap.add_argument("--retraduire", action="store_true",
+                    help="retraduit les libelles deja en base, sans requete "
+                         "reseau : utile apres enrichissement de la table FR")
     a = ap.parse_args()
 
     s = sonde("incr11_secteur_intl")
@@ -203,6 +249,29 @@ def main():
                 print(f"  contexte « {mot} » : "
                       + (re.sub(r"\s+", " ", h[i:i + 220]) if i >= 0 else "absent"))
         print("\nAucune ecriture.")
+        return
+
+    # ---- retraduction ------------------------------------------------------
+    if a.retraduire:
+        s.phase("retraduction")
+        lignes = d1("SELECT ticker, secteur FROM societe WHERE origine LIKE '%intl%' "
+                    "AND secteur IS NOT NULL AND secteur != ''")[0]["results"]
+        change = [(l["ticker"], traduire(l["secteur"]))
+                  for l in lignes if traduire(l["secteur"]) != l["secteur"]]
+        print(f"  {len(lignes)} activites en base, {len(change)} a retraduire")
+        for i in range(0, len(change), 20):
+            lot = change[i:i + 20]
+            vals, params = [], []
+            for t, fr in lot:
+                vals.append("(?, ?, ?)")
+                params += [t, fr, RUN_TS]
+            d1("INSERT INTO societe (ticker, secteur, maj) VALUES "
+               + ", ".join(vals) + " ON CONFLICT(ticker) DO UPDATE SET "
+               "secteur = excluded.secteur, maj = excluded.maj",
+               params, lignes=len(lot), table="societe")
+        journal("OK", "incr11_secteur_intl", len(change), "VERT",
+                f"{len(change)} retraduites", s.resume())
+        s.afficher()
         return
 
     # ---- file --------------------------------------------------------------
