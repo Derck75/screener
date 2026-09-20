@@ -13,6 +13,8 @@
    ════════════════════════════════════════════════════════════════════════ */
 
 
+const TERMINAL_G = 0.025;
+
 function mediane(arr) {
   const v = arr.filter(x => Number.isFinite(x)).sort((a, b) => a - b);
   if (!v.length) return null;
@@ -660,6 +662,452 @@ function profilSociete(der, opt) {
   return o;
 }
 
+function ancrageEVA(der, wacc, H, actions, opt) {
+  const o = { ko: null, notes: [] };
+  if (!Number.isFinite(wacc) || wacc <= 0) return { ko: "WACC non dérivable" };
+  if (!Number.isFinite(actions) || actions <= 0) return { ko: "nombre d'actions indisponible" };
+  const dern = der.annees[der.annees.length - 1];
+  if (!dern) return { ko: "aucun exercice exploitable" };
+
+  /* ══ AIGUILLAGE UNIQUE ══
+     Un seul juge décide si cette brique s'applique : `profilSociete`. Les
+     garde-fous qui vivaient ici — capital investi négatif, bilan bancaire,
+     intensité capitalistique — y ont été absorbés.
+     POURQUOI CE DÉDOUBLONNAGE ÉTAIT URGENT : tant que les deux couches
+     coexistaient, l'ancienne s'exécutait la première et masquait la nouvelle.
+     Adyen sortait sur « capital investi négatif » sans que le diagnostic de
+     série non homogène ne soit jamais consulté — le bon refus pour la
+     mauvaise raison, et un message qui n'orientait vers aucune action. */
+  const prof = (opt && opt.profil) ? opt.profil : profilSociete(der, opt);
+  o.profil = prof;
+  if (!prof.evaOK) return { ko: prof.ko, profilNonIndustriel: true, profil: prof };
+  for (const n of prof.notes) o.notes.push(n);
+
+  const R = roicRetenu(der);
+  let CI0 = R.CI0, roic0 = R.mediane;
+  const base = R.base;
+  if (!Number.isFinite(roic0)) return { ko: "ROIC médian non calculable", profil: prof };
+  const l = der.lignes[dern];
+
+  /* NOPAT DE RÉFÉRENCE DE LA BRIQUE — le même que celui qui a produit le ROIC
+     retenu. Trois usages en dépendent : le taux de rétention qui fait croître
+     le capital, le ROIC du dernier exercice, et le contrôle de plausibilité en
+     sortie. Les faire diverger reviendrait à comparer une valeur bâtie sur un
+     numérateur à un résultat mesuré sur un autre. */
+  const RTeff = !!(R.retraite && Number.isFinite(l.nopatRet));
+  const nopatRef = RTeff ? l.nopatRet : (Number.isFinite(l.nopat) ? l.nopat : null);
+  o.retraite = RTeff;
+  if (R.retraite && !RTeff) o.notes.push("Retraitement du numérateur actif sur la série mais NON servi sur le dernier exercice : la brique repart du NOPAT publié pour ne pas mélanger deux définitions sur la même valeur.");
+  if (RTeff && Number.isFinite(R.medianeComptable)) {
+    o.notes.push(`ROIC retenu ${pct(roic0)} après retraitement de l'amortissement des incorporels d'acquisition, contre ${pct(R.medianeComptable)} sur le résultat d'exploitation publié. Le goodwill et les incorporels acquis restent AU DÉNOMINATEUR : le prix payé n'est pas effacé, seule la charge qui le facturait une seconde fois l'est.`);
+  }
+
+  const roicDern = R.brut
+    ? ((Number.isFinite(nopatRef) && Number.isFinite(R.CI0) && R.CI0 > 0) ? nopatRef / R.CI0 : null)
+    : l[R.cle];
+  /* ══ LA FORME DU FADE SE DÉDUIT DE LA TRAJECTOIRE, ELLE N'EST PLUS FIXE ══
+     Le modèle appliquait « plateau » à toutes les sociétés : ROIC maintenu à
+     son niveau de départ pendant la moitié de l'horizon, puis extinction. Ce
+     plateau encode une affirmation — l'avantage tient AUJOURD'HUI — et il ne
+     doit donc pas s'appliquer à une société dont les chiffres disent le
+     contraire.
+     Novo Nordisk l'a révélé : ROIC de 83,1 % à 72,3 % puis 55,8 % sur trois
+     exercices, FCF de 83,1 à 59,0 Md DKK depuis 2023, capex multiplié par
+     cinq — et le serveur maintenait 55,8 % dix ans en palier avant de
+     commencer à l'éteindre. L'ancrage sortait 64,5 % AU-DESSUS de Morningstar,
+     seul cas du portefeuille dans ce sens, et ce n'est pas un hasard : c'est
+     la seule ligne en déclin de rentabilité franc et continu.
+     RÈGLE : trois exercices consécutifs de baisse du ROIC ⇒ fade LINÉAIRE, qui
+     décroît dès la première année au lieu d'attendre la mi-horizon. Le seuil
+     de trois est celui que le cadre utilise déjà pour la décélération
+     organique — on ne crée pas un critère de plus, on réutilise le sien.
+     PENSÉE INVERSE : une société cyclique en creux verrait son ROIC monter,
+     donc garderait le plateau ; et un accident isolé suivi d'un plateau ne
+     déclenche pas, puisqu'il faut trois baisses D'AFFILÉE. Le risque restant
+     est de pénaliser une phase d'investissement lourde qui paiera plus tard —
+     mais dans ce cas le modèle doit se tromper du côté prudent, et c'est
+     précisément ce qu'il fait ici. */
+  const traj = trajectoireROIC(der, R);
+  o.traj = traj;
+  o.baissesConsecutives = traj.baisses;
+  let forme = "plateau", formeNote = null;
+  if (traj.fadeLineaire) {
+    forme = "lineaire";
+    formeNote = `ROIC en repli sur ${traj.baisses} exercices consécutifs (${pct(traj.serie[traj.serie.length - 1 - traj.baisses])} → ${pct(traj.serie[traj.serie.length - 1])}). Le fade démarre dès la première année au lieu d'attendre la mi-horizon : maintenir en palier une rentabilité qui recule depuis trois ans reviendrait à parier contre les chiffres publiés.`;
+  }
+
+  if (Number.isFinite(roicDern) && roicDern < roic0 * 0.80) {
+    o.notes.push(`ROIC du dernier exercice ${pct(roicDern)} contre une médiane de ${pct(roic0)} : dégradation de ${pct(1 - roicDern / roic0)}. Le plus bas est retenu — capitaliser vingt ans une rentabilité déjà perdue serait la première façon de se tromper sur un compounder. Vérifier si le décrochage est un accident nommé ou une tendance.`);
+    roic0 = roicDern;
+    o.degradation = true;
+  }
+
+  /* INTENSITÉ CAPITALISTIQUE — remplace un ancien plafond de ROIC à 50 %.
+     CE PLAFOND ÉTAIT UNE ERREUR, et une erreur biaisée dans le mauvais sens.
+     L'excédent vaut (ROIC − WACC) × CI, c'est-à-dire NOPAT − WACC × CI : quand
+     le capital investi tend vers zéro, l'excédent tend vers le NOPAT et non
+     vers l'infini. Le modèle est auto-borné par construction. Plafonner le
+     ROIC cassait cette identité en amputant le NOPAT lui-même — sur un cas
+     testé à 4 286 % de ROIC, le plafond ramenait la valeur à 1 % de sa valeur
+     correcte. Il frappait donc exactement les sociétés asset-light à marque
+     forte, celles qu'on cherche.
+     CE QUI REMPLACE : un DIAGNOSTIC publié, jamais une amputation. Sous 15 %
+     de capital investi rapporté au chiffre d'affaires, le ROIC cesse d'être
+     lisible comme un taux de rentabilité — la brique se lit alors comme une
+     capitalisation du NOPAT sur H années, ce qui reste sain mais se dit. */
+  const intensite = prof.intensite !== undefined ? prof.intensite : null;
+  o.intensite = intensite;
+  o.denominateurFragile = prof.type === "asset_light";
+  if (roic0 <= wacc) o.notes.push(`ROIC médian ${pct(roic0)} sous le WACC ${pct(wacc)} : aucun sur-rendement à actualiser, la valeur se réduit au capital investi`);
+
+  /* CROISSANCE DU CAPITAL INVESTI. Théorique = taux de rétention × ROIC, mais
+     PLAFONNÉE au CAGR du CA démontré : une société ne fait pas croître son
+     capital productif plus vite que son activité sur 20 ans sans que le ROIC
+     s'effondre, ce que le fade modélise déjà. Bornes dures 0-12 %. */
+  let g = null, gNote = null;
+  const nopat = nopatRef;
+  const rendu = (Number.isFinite(l.dividendes) ? Math.abs(l.dividendes) : 0) + (Number.isFinite(l.buybacks) ? Math.abs(l.buybacks) : 0);
+  if (nopat && nopat > 0) {
+    const b = Math.min(1, Math.max(0, 1 - rendu / nopat));
+    g = b * roic0;
+    gNote = `rétention ${pct(b)} × ROIC ${pct(roic0)}`;
+  }
+  const gCA = Number.isFinite(der.cagr.ca.retenu) ? der.cagr.ca.retenu : null;
+  if (g === null && gCA !== null) { g = gCA; gNote = "CAGR du CA retenu (rétention non calculable)"; }
+  if (g !== null && gCA !== null && g > gCA) { g = gCA; gNote += `, plafonnée au CAGR du CA ${pct(gCA)}`; }
+  if (g === null) { g = 0; gNote = der.rupture ? "CAGR non exploitable (série non homogène) et rétention non calculable — capital investi figé" : "ni rétention ni CAGR exploitables — capital investi figé, hypothèse volontairement conservatrice"; }
+  if (g < 0) { g = 0; gNote += ", bornée à 0 %"; }
+
+  /* P4 — LE CAPITAL NE PEUT PAS COMPOSER PLUS VITE QUE LE TAUX D'ACTUALISATION.
+     C'est la faille qui a produit une fair value de 665 € sur un titre à 206 €.
+     Chez GTT : capital investi 311 M, ROIC 144 %, WACC 5,1 %, croissance du
+     capital plafonnée au « CAGR du CA » de 37,7 %. Le terme actualisé de
+     l'année i vaut (r − w) × CI₀ × (1+g)ⁱ ÷ (1+w)ⁱ : quand g dépasse w, le
+     ratio (1+g)/(1+w) = 1,31 et chaque terme est 31 % plus gros que le
+     précédent. La somme ne converge pas, elle EXPLOSE. Mesuré : capital
+     investi porté de 0,31 Md à 118,9 Md € en vingt ans, soit un multiple de
+     383 sur un marché — les méthaniers GNL — qui n'a pas cette taille.
+     Le commentaire qui affirmait le modèle « auto-borné par construction »
+     n'était vrai que pour g ≤ 0. La borne « g ≤ ROIC de l'année » est une
+     identité comptable exacte et parfaitement inopérante ici : à 144 % de
+     ROIC elle ne mord jamais.
+
+     DEUX CORRECTIFS, cumulatifs.
+     (a) FADE DE g, même forme que le fade du ROIC : la piste de
+         réinvestissement se referme en même temps que l'avantage, il n'y a
+         aucune raison de faire converger le second en laissant le premier
+         constant.
+     (b) PLAFOND AU WACC. Justification, et ce n'est pas un calibrage : le
+         modèle affirme déjà que le ROIC rejoint le WACC en H années. Si le
+         capital compose simultanément au-dessus du taux d'actualisation, la
+         valeur devient une course entre une base qui enfle et un spread qui
+         s'amincit — un point de bascule que ce modèle n'a jamais été conçu
+         pour arbitrer, et du mauvais côté duquel il diverge. Plafonner g au
+         WACC rend le flux non explosif par construction et laisse la valeur
+         portée par le SPREAD, ce à quoi la brique sert.
+
+     MESURE. GTT : 2 379,21 € → 177,81 €, soit 14,6× le NOPAT — à l'intérieur
+     de la plage 8-17× que le modèle publie lui-même comme normale, sans
+     qu'aucun seuil n'ait été calibré pour y arriver. Le fade seul ne
+     suffisait pas (1 870 €, capital final encore 39,6 Md) : c'est le plafond
+     qui fait le travail. NON-RÉGRESSION sur les cas sains : UMG 11,24 →
+     11,07 (−1,6 %), Siemens Healthineers 25,74 → 25,67 (−0,3 %). Un
+     garde-fou invisible sur ce qui va bien et décisif sur ce qui casse.
+     RIEN N'EST CACHÉ : quand le plafond mord, la valeur sans plafond est
+     publiée en sensibilité et le coût de la contrainte est nommé. */
+  o.gBrut = g;
+  o.gPlafonneAuWACC = false;
+  if (Number.isFinite(wacc) && g > wacc) {
+    o.gPlafonneAuWACC = true;
+    gNote += `, PLAFONNÉE au WACC ${pct(wacc)} (croissance brute ${pct(g)})`;
+  }
+  /* ══ DOMAINE DE VALIDITÉ — LA BRIQUE DEVIENT UN PLANCHER, ET LE DIT ══
+     Le plafond P4 empêche la divergence, il ne rend pas le modèle pertinent
+     pour autant. Quand la croissance brute du capital dépasse le WACC de
+     moitié, la brique cesse de représenter la société et se met à représenter
+     sa base installée : elle répond alors à « que vaut ce qui existe déjà ? »
+     et non à « que vaut cette société ? ». Les deux questions sont
+     légitimes, la seconde n'est simplement pas celle-là.
+     Le dire change la lecture de la blended : une composante étiquetée
+     PLANCHER ne se moyenne pas de la même façon qu'une estimation centrale,
+     et c'est au lecteur de le savoir plutôt qu'au serveur d'en décider seul
+     en modifiant une pondération que le cadre fixe par écrit. */
+  if (Number.isFinite(wacc) && Number.isFinite(o.gBrut) && o.gBrut > 1.5 * wacc) {
+    o.plancherCroissance = true;
+    o.notes.push(`⚠️ **Lecture PLANCHER, pas estimation centrale.** La croissance du capital ressort à ${pct(o.gBrut)} avant plafonnement, soit plus d'une fois et demie le WACC de ${pct(wacc)} : le modèle ne sait pas représenter ce rythme de réinvestissement et le ramène au taux d'actualisation. Ce que cette brique chiffre est donc la valeur de la BASE INSTALLÉE à rentabilité gelée — un plancher, en dessous duquel la société ne devrait pas se payer, jamais une estimation de ce qu'elle vaut si sa trajectoire se poursuit.`);
+  }
+  gNote += `, puis éteinte vers ${pct(TERMINAL_G)} sur la seconde moitié de l'horizon`;
+
+  const dn = Number.isFinite(l.dn) ? l.dn : 0;
+
+  /* ══ P19/1 — LA TRÉSORERIE NE PEUT PAS ÊTRE COMPTÉE DEUX FOIS ══
+     Le modèle faisait « capital investi + sur-rendements actualisés − DETTE
+     NETTE ». Sur une base qui déduit la trésorerie du capital investi (côté
+     actif, côté financement) c'est exact, et c'est la forme standard du
+     résultat résiduel : la trésorerie sort du capital d'un côté et rentre
+     dans la valeur de l'autre, une seule fois.
+     Sur le capital employé BRUT, la trésorerie n'a JAMAIS été déduite du
+     capital. Elle est déjà dedans. La retrancher une seconde fois sous forme
+     de dette nette l'ajoute donc à la valeur alors qu'elle y figure déjà —
+     un double compte pur, dont l'ampleur est la trésorerie elle-même.
+     Vérification par l'identité : capital investi − dette nette doit valoir
+     les capitaux propres comptables, rien d'autre.
+       · côté financement : (dette + CP − trésorerie) − (dette − trésorerie)
+         = CP ✅
+       · employé brut     : (dette + CP) − (dette − trésorerie)
+         = CP + trésorerie ❌ — la trésorerie en trop, une fois
+     Sur CTS Eventim le poste vaut environ 1,2 Md pour 96 millions d'actions,
+     soit une douzaine d'euros par action sur un ancrage de trente-sept : le
+     tiers de la valeur intrinsèque était de l'argent compté deux fois. Et il
+     s'agit précisément de la société dont la trésorerie appartient aux
+     acheteurs de billets et aux organisateurs.
+     CORRECTIF : sur la base brute on ne retranche que la DETTE BRUTE.
+     PENSÉE INVERSE — le correctif peut-il casser une société ordinaire ?
+     Non : la base brute n'est retenue que lorsque les deux dénominateurs par
+     soustraction sont inexploitables. Partout ailleurs `dn` est inchangé, au
+     signe et au centime près. Le risque symétrique — sous-évaluer une
+     société réellement assise sur une trésorerie d'actionnaires — est traité
+     par la ligne suivante : cette trésorerie est déjà DANS le capital investi
+     et rapporte donc le ROIC dans le modèle, elle n'est pas perdue.
+     ══ P19/2 — LA TRÉSORERIE AJOUTABLE EST NETTE DU FLOTTANT CLIENT ══
+     Sur la base d'exploitation, la trésorerie est hors du capital investi :
+     elle doit donc bien être ajoutée. Mais pas en totalité. L'argent des
+     clients encaissé d'avance dort sur le même compte en banque que celui
+     des actionnaires, et lui seul appartient aux actionnaires. Quand le
+     flottant est saisi, on n'ajoute que l'excédent ; quand il ne l'est pas,
+     les deux bornes sont publiées et aucune n'est choisie en silence. */
+  const flott = Number.isFinite(l.flottant) ? l.flottant : null;
+  const tresor = (Number.isFinite(l.dette) && Number.isFinite(l.dn)) ? l.dette - l.dn : null;
+  let dnEffectif = dn, dnNote = null;
+
+  if (R.brut) {
+    dnEffectif = Number.isFinite(l.dette) ? l.dette : dn;
+    if (Number.isFinite(tresor) && tresor > 0) {
+      dnNote = `Base brute : la trésorerie de ${millions(tresor)} est DÉJÀ comprise dans le capital investi. Seule la dette brute (${millions(dnEffectif)}) est retranchée — la retrancher en dette nette l'ajouterait une seconde fois à la valeur.`;
+    }
+  } else if (CLE_BASE(R.cle) === "roicExp" && Number.isFinite(tresor)) {
+    const ajoutable = flott !== null ? Math.max(0, tresor - flott) : tresor;
+    dnEffectif = (Number.isFinite(l.dette) ? l.dette : 0) - ajoutable;
+    dnNote = flott !== null
+      ? `Base d'exploitation : trésorerie ${millions(tresor)}, flottant client saisi ${millions(flott)} — seul l'excédent de ${millions(ajoutable)} est ajouté à la valeur, le reste appartient aux clients.`
+      : `Base d'exploitation : trésorerie ${millions(tresor)} ajoutée en totalité, FLOTTANT CLIENT NON SAISI. Si tout ou partie de cette trésorerie est de l'argent client, la valeur est surestimée d'autant — jusqu'à ${millions(tresor)} au total. Saisir le flottant par \`seed\` pour lever la borne.`;
+  } else if (flott !== null && Number.isFinite(tresor) && flott > 0) {
+    const ajoutable = Math.max(0, tresor - flott);
+    dnEffectif = (Number.isFinite(l.dette) ? l.dette : 0) - ajoutable;
+    dnNote = `Trésorerie ${millions(tresor)} dont ${millions(flott)} de flottant client : seul l'excédent de ${millions(ajoutable)} entre dans la valeur.`;
+  }
+  if (dnNote) o.notes.push(dnNote);
+  o.dnEffectif = dnEffectif; o.dnBrut = dn; o.flottant = flott; o.tresorerie = tresor;
+
+  /* FORME DU FADE — le paramètre le plus lourd du modèle, et il était faux.
+     Un fade linéaire dès la première année contredit le verdict de moat
+     lui-même : si l'avantage est intact aujourd'hui, l'érosion n'a pas
+     commencé. Surtout, l'aire sous la courbe d'un fade linéaire sur H ans
+     vaut la moitié de celle d'un maintien sur H ans — étiqueter « Wide Moat,
+     20 ans » puis éroder dès t=1 n'accordait donc que DIX ans d'avantage
+     effectif. Mesuré : facteur 1,58 entre les deux formes sur un profil de
+     compounder, ce qui suffisait à faire diverger cette brique de la brique
+     multiple sur les cinq profils testés.
+     RETENU : plateau sur la première moitié de H, érosion linéaire vers le
+     WACC sur la seconde. Fidèle à ce que le verdict affirme — l'avantage
+     tient, puis se referme — et intermédiaire entre les deux extrêmes. Le
+     choix ne se cache pas : les trois formes sont publiées en sensibilité. */
+  const facteurFade = (i, h, forme) => {
+    if (forme === "lineaire") return 1 - i / h;
+    if (forme === "maintien") return 1;
+    return i <= h / 2 ? 1 : 1 - (i - h / 2) / (h / 2);   // plateau puis fade
+  };
+
+  /* calc(w, h, forme, sansPlafond) — sansPlafond sert UNIQUEMENT à publier ce
+     que la contrainte P4 coûte. Elle n'alimente aucune valeur retenue. */
+  const calc = (w, h, forme, sansPlafond) => {
+    let CI = CI0, pv = 0;
+    for (let i = 1; i <= h; i++) {
+      const f = facteurFade(i, h, forme || "plateau");
+      const r = w + (roic0 - w) * f;
+      pv += (r - w) * CI / Math.pow(1 + w, i);
+      /* Croissance du capital de l'année i : elle s'éteint vers la croissance
+         terminale sur la même forme que le ROIC, puis reste bornée par le
+         taux d'actualisation (P4) et par le ROIC de l'année — cette dernière
+         borne est une identité comptable : on ne réinvestit pas plus que ce
+         que le capital rapporte. */
+      let gi = TERMINAL_G + (g - TERMINAL_G) * f;
+      if (!sansPlafond && Number.isFinite(w)) gi = Math.min(gi, w);
+      CI = CI * (1 + Math.min(gi, Math.max(0, r)));
+    }
+    return { v: (CI0 + pv - dnEffectif) / actions, CIfin: CI };
+  };
+
+  if (formeNote) o.notes.push(formeNote);
+  o.forme = forme;
+  const R0 = calc(wacc, H, forme);
+  const v = R0.v;
+  o.CIfin = R0.CIfin;
+  if (Number.isFinite(o.CIfin) && CI0 > 0) o.multipleCapital = o.CIfin / CI0;
+  if (!Number.isFinite(v) || v <= 0) return { ko: "valeur par action non positive — capital investi inférieur à la dette nette, brique EVA non publiable" };
+
+  /* CONTRÔLE DE PLAUSIBILITÉ EN SORTIE, jamais en entrée. Plutôt que de brider
+     un input — ce que faisait l'ancien plafond de ROIC, à tort — on vérifie ce
+     que la valeur produite représente en multiple du résultat opérationnel net
+     d'impôt. C'est lisible, comparable d'une société à l'autre, et ça n'ampute
+     rien : au-delà de 25× le NOPAT la valeur est SIGNALÉE, pas corrigée. Ordre
+     de grandeur : le modèle rend ~7 à 10× le NOPAT sur des paramètres usuels,
+     et ne dépasse 25× que si la croissance du capital approche le WACC sur un
+     horizon long — hypothèse qui doit alors être défendue explicitement. */
+  const nopatAction = (Number.isFinite(nopatRef) && nopatRef > 0) ? nopatRef / actions : null;
+  if (nopatAction) {
+    o.multipleNopat = v / nopatAction;
+    /* P6 — UN GARDE-FOU QUI SIGNALE SANS EXCLURE N'EST PAS UN GARDE-FOU.
+       Ce contrôle s'allumait déjà sur GTT — 197× le NOPAT — et la valeur
+       partait quand même dans l'ancrage, puis dans la blended à 40 %, puis
+       dans la décote qui conditionne le point PRIX. Un avertissement que
+       personne ne peut actionner à l'intérieur d'un calcul automatique est un
+       ornement.
+       Deux paliers, parce que 25× n'est pas 60× :
+       · 25-40× → la valeur reste dans l'ancrage, signalée. Zone où un
+         compounder asset-light authentique peut légitimement se trouver.
+       · >40× → brique EXCLUE de l'ancrage. La brique multiple prend 100 %,
+         exactement comme sur un bilan bancaire. La valeur EVA reste publiée
+         comme information, elle ne pondère plus rien.
+       Pourquoi ne pas simplement écrêter à 25× ? Parce qu'écrêter produit un
+       nombre faux d'apparence normale, qui traverse ensuite tout le système
+       sans laisser de trace. Refuser laisse une trace. */
+    if (o.multipleNopat > 40) {
+      o.plausibiliteDouteuse = true;
+      return {
+        ko: `valeur de ${num(o.multipleNopat, 0)}× le NOPAT par action, au-delà du seuil de refus de 40×. Le modèle rend 8 à 17× sur des paramètres usuels : un tel niveau signale que les hypothèses de croissance portent le résultat, pas la rentabilité constatée. La brique EVA est écartée de l'ancrage — sa valeur indicative ${num(v, 2)} reste publiée mais ne pondère rien, la brique multiple prend l'ancrage`,
+        valeurIndicative: v, multipleNopat: o.multipleNopat, profil: prof, notes: o.notes
+      };
+    }
+    if (o.multipleNopat > 25) {
+      o.notes.push(`Valeur de ${num(o.multipleNopat, 0)}× le NOPAT par action. Au-delà de 25×, la combinaison croissance du capital ${pct(g)} / WACC ${pct(wacc)} sur ${H} ans porte l'essentiel du résultat : la vérifier avant de s'en servir, plutôt que la retenir telle quelle. Au-delà de 40× la brique serait écartée.`);
+      o.plausibiliteDouteuse = true;
+    }
+    /* ══ P20 — LE PLANCHER QUI MANQUAIT, SYMÉTRIQUE DU PLAFOND DE 40× ══
+       Constaté sur Broadcom le 03/09/2026 : ancrage propre à 6,88 USD pour une
+       société qui dégage 5,16 USD de NOPAT par action, soit 1,3× — publié,
+       pondéré à 15 % de la blended, et faisant tomber la décote de 40,0 % à
+       21,6 %. Le nombre a traversé tout le système sans qu'aucun contrôle ne
+       le retienne, parce que TOUS les contrôles regardaient vers le haut.
+       POURQUOI UN PLANCHER EST LÉGITIME ALORS QU'UN PLAFOND L'EST DÉJÀ :
+       l'argument est arithmétique, pas prudentiel. À ROIC exactement égal au
+       WACC, la brique rend le capital investi, soit 1/ROIC ≈ 9 à 11× le NOPAT.
+       Le modèle publie lui-même 8 à 17× comme plage usuelle. Pour descendre
+       sous 4×, il faut soit un sur-rendement profondément négatif capitalisé
+       vingt ans, soit une dette nette qui dévore une base déjà décotée — dans
+       les deux cas le résultat est porté par autre chose que la rentabilité
+       mesurée, exactement le reproche fait aux valeurs au-dessus de 40×.
+       CE QUE CE PLANCHER NE FAIT PAS : sauver un value trap. Le seuil est
+       exprimé en multiple du NOPAT, donc il se contracte avec le résultat.
+       Une société qui ne gagne presque rien a un NOPAT presque nul, un
+       plancher presque nul, et garde son ancrage bas — c'est bien ce qu'on
+       veut. Le plancher ne mord QUE sur une société qui gagne beaucoup et à
+       laquelle le modèle attribue presque rien : la signature d'un numérateur
+       et d'un dénominateur qui ne parlent pas de la même chose, jamais celle
+       d'une destruction de valeur.
+       PENSÉE INVERSE — une société en déclin réel dont le NOPAT reste élevé
+       une dernière année passerait-elle au travers ? Oui, et c'est traité
+       ailleurs : trois exercices de baisse du ROIC déclenchent le fade
+       linéaire, et le ROIC du dernier exercice remplace la médiane dès qu'il
+       est inférieur de 20 %. Le plancher ne désarme aucun de ces deux
+       mécanismes, il refuse seulement de publier leur résultat quand celui-ci
+       cesse d'avoir un sens économique. */
+    if (o.multipleNopat < 4) {
+      o.plausibiliteDouteuse = true;
+      return {
+        ko: `valeur de ${num(o.multipleNopat, 1)}× le NOPAT par action, sous le seuil de refus de 4×. Le modèle rend 8 à 17× sur des paramètres usuels, et 1/ROIC — soit environ ${Number.isFinite(roic0) && roic0 > 0 ? num(1 / roic0, 0) : "9 à 11"}× — au point où le ROIC égale le WACC. Descendre sous 4× exige soit un sur-rendement négatif capitalisé ${H} ans, soit une dette nette qui dévore une base déjà décotée : dans les deux cas la valeur décrit autre chose que la rentabilité mesurée. La brique EVA est écartée de l'ancrage — sa valeur indicative ${num(v, 2)} reste publiée mais ne pondère rien${RTeff ? "" : ", et le premier remède à tester est le retraitement du numérateur (`seed` de l'amortissement des incorporels d'acquisition) si le goodwill pèse au dénominateur"}. BASE DE CAPITAL INVESTI RETENUE PAR CETTE BRIQUE : ${Number.isFinite(R.CI0) ? num(R.CI0 / 1e9, 2) + " Md" : "non calculable"} (${R.base || "base non nommée"}). ⚠️ C'EST LE TEST QUI TRANCHE, et il départage deux causes aux remèdes OPPOSÉS : si cette base est IDENTIQUE à celle du ROIC publié par \`dossier\`, la brique a tout ce qu'il lui faut et son refus est un REFUS DE DOMAINE — le modèle « capital investi + sur-rendements » ne peut structurellement pas approcher le prix d'une société dont les profits croissent sans que le capital croisse (licences et données, plateforme, acquéreur en série). La valeur se lit alors comme un PLANCHER hors pondération, cause nommée, et il n'y a rien à corriger. Si les deux bases DIFFÈRENT, ce sont les postes de bilan qui manquent (\`intangTot\`, \`receivables\`, \`payables\` en 404) : la base est amputée, la dette nette la dévore, et le remède est un \`seed\`. Une implausibilité appelle une correction de code, un refus de domaine appelle une publication en plancher et l'arrêt des recherches`,
+        valeurIndicative: v, multipleNopat: o.multipleNopat, plancher: true, profil: prof, notes: o.notes
+      };
+    }
+    /* ══ P21 — LE REFUS DE DOMAINE, ET POURQUOI IL EXIGE DEUX CLÉS ══
+       Le plancher de 4× a bien empêché Broadcom de publier 6,88 USD, mais le
+       retraitement du numérateur l'a fait remonter à 27,58 — soit 4,07× le
+       NOPAT, un centième au-dessus du refus. La valeur est passée, et elle
+       reste absurde : 135 Md USD de valeur des capitaux propres pour une
+       société qui dégage 39 Md USD de flux disponibles par an.
+       DIAGNOSTIC, ET IL N'EST PAS UNE QUESTION DE CALIBRAGE. Ce modèle crée
+       de la valeur d'UNE seule façon : un écart de rentabilité appliqué à une
+       base de capital qui grossit. Il ne sait donc pas représenter une
+       société dont les profits croissent SANS que son capital croisse —
+       Broadcom passe de 26,9 à 39,4 Md USD de flux disponibles avec 1,0 Md de
+       dépenses d'investissement sur neuf mois, soit 1,4 % de son chiffre
+       d'affaires. Dans le monde du modèle, ce qui n'immobilise rien ne
+       rapporte rien. Le biais est déjà écrit trois blocs plus bas ; ce qui
+       manquait, c'est d'en TIRER LA CONSÉQUENCE au lieu de pondérer le
+       résultat à 15 % après l'avoir signalé.
+       DEUX CLÉS OBLIGATOIRES, et c'est tout le dispositif anti-régression :
+       (1) la SORTIE doit déjà être hors de la plage que le modèle publie
+           lui-même comme normale — moins de 6× le NOPAT contre 8 à 17× ;
+       (2) une CAUSE d'entrée doit être nommée et mesurée.
+       Une société ordinaire ne franchit jamais la première clé : sa brique
+       atterrit dans la plage usuelle et rien ne se déclenche, quels que
+       soient son goodwill ou sa croissance. C'est la garantie que ce refus
+       ne touche que les cas où le modèle a DÉJÀ produit un résultat qu'il
+       désavoue.
+       PENSÉE INVERSE — retire-t-on la voix prudente au pire moment ? C'est
+       l'objection sérieuse : sur un semi-conducteur en haut de cycle, le
+       ROIC du dernier exercice dépasse mécaniquement sa médiane, et c'est
+       exactement là qu'on veut un ancrage sobre. Réponse : la valeur n'est
+       pas jetée, elle est RECLASSÉE EN PLANCHER et publiée comme telle. Ce
+       qui cesse, c'est de moyenner un plancher avec trois estimations
+       centrales comme s'ils étaient de même nature — une moyenne entre « ce
+       que vaut la base installée » et « ce que vaut l'entreprise » ne
+       répond à aucune des deux questions. */
+    const partGWm = Number.isFinite(der.goodwillPartMedian) ? der.goodwillPartMedian : null;
+    const causes = [];
+    if (Number.isFinite(roicDern) && Number.isFinite(roic0) && roic0 > 0 && roicDern >= 1.5 * roic0) {
+      causes.push(`ROIC du dernier exercice ${pct(roicDern)} contre une médiane de ${pct(roic0)}, soit ${num(roicDern / roic0, 2)}× — la série n'est pas stationnaire, la médiane décrit une société plus petite que celle d'aujourd'hui`);
+    }
+    if (o.plancherCroissance) {
+      causes.push(`croissance brute du capital ${pct(o.gBrut)} contre un WACC de ${pct(wacc)} — le modèle ne sait pas représenter ce rythme de réinvestissement et le ramène au taux d'actualisation`);
+    }
+    if (Number.isFinite(partGWm) && partGWm >= 0.50) {
+      causes.push(`goodwill à ${pct(partGWm)} du capital investi — le dénominateur est majoritairement un PRIX PAYÉ, pas un actif productif dont la croissance porterait les profits`);
+    }
+    if (o.multipleNopat < 6 && causes.length) {
+      o.plausibiliteDouteuse = true;
+      return {
+        ko: `HORS DOMAINE — valeur de ${num(o.multipleNopat, 1)}× le NOPAT par action, sous la plage usuelle de 8 à 17× que ce modèle publie lui-même, ET cause d'entrée nommée : ${causes.join(" · ")}. Ce modèle ne crée de la valeur qu'en appliquant un écart de rentabilité à une base de capital qui grossit : il sous-estime structurellement, et toujours dans le même sens, une société dont les profits croissent sans que son capital croisse. La valeur de ${num(v, 2)} reste publiée comme PLANCHER de la base installée — ce en dessous de quoi la société ne devrait pas se payer — et ne pondère plus l'ancrage, parce qu'un plancher ne se moyenne pas avec des estimations centrales`,
+        valeurIndicative: v, multipleNopat: o.multipleNopat, plancher: true, horsDomaine: true,
+        causesPlancher: causes, profil: prof, notes: o.notes
+      };
+    }
+    if (o.multipleNopat < 6) {
+      o.notes.push(`Valeur de ${num(o.multipleNopat, 1)}× le NOPAT par action, sous la plage usuelle de 8 à 17× — mais AUCUNE cause d'entrée n'est nommable : la série est stationnaire, le capital ne croît pas au-delà du WACC et le goodwill ne domine pas le dénominateur. Le chiffre est donc tenu pour une mesure et non pour un artefact : soit le sur-rendement est négatif sur la fenêtre, soit la dette nette pèse lourd face au capital investi. Sous 4× la brique serait écartée.`);
+      o.plausibiliteDouteuse = true;
+    }
+  }
+
+  /* ══ BIAIS DIRECTIONNEL, NOMMÉ UNE FOIS ══
+     Ce modèle gèle le ROIC à sa médiane et ne fait croître que la BASE de
+     capital. Il ne sait donc pas représenter une société dont la rentabilité
+     PAR UNITÉ de capital s'améliore — marges qui montent, mix qui bascule
+     vers le récurrent. Sur ces cas il sous-estime, structurellement et
+     toujours dans le même sens.
+     C'est exactement le biais INVERSE de la brique multiple, qui suppose que
+     le marché a eu raison de payer ce qu'il a payé. Deux biais connus et
+     opposés, moyennés, valent mieux qu'un seul biais connu : c'est la seule
+     raison pour laquelle cette brique reste dans le système.
+     Rapport preuve / affirmation : il est publié tel quel, sans jugement —
+     extrapoler vingt ans depuis quatre exercices est un rapport de 1 à 5, et
+     c'est au lecteur de décider ce qu'il en fait. */
+  o.nbExercices = der.annees.length;
+  o.ratioExtrapolation = der.annees.length > 0 ? H / der.annees.length : null;
+  o.valeur = v;
+  o.CI0 = CI0; o.roic0 = roic0; o.g = g; o.gNote = gNote; o.H = H; o.wacc = wacc; o.dn = dnEffectif; o.actions = actions; o.base = base;
+  o.sensH = [calc(wacc, Math.max(3, H - 5), forme).v, calc(wacc, H + 5, forme).v];
+  o.sensW = [calc(wacc + 0.005, H, forme).v, calc(wacc - 0.005, H, forme).v];
+  // Le choix de forme est publié comme une sensibilité, pas enfoui dans le code.
+  o.sensForme = { lineaire: calc(wacc, H, "lineaire").v, plateau: calc(wacc, H, "plateau").v, maintien: calc(wacc, H, "maintien").v };
+  if (o.gPlafonneAuWACC) {
+    const sp = calc(wacc, H, forme, true);
+    o.valeurSansPlafond = sp.v;
+    o.notes.push(`Croissance du capital plafonnée au WACC : ${pct(o.gBrut)} brute ramenée à ${pct(wacc)}. Sans ce plafond la brique rendrait ${num(sp.v, 2)} par action et porterait le capital investi à ${millions(sp.CIfin)} en ${H} ans, contre ${millions(o.CIfin)} avec. Le chiffre sans plafond est publié pour que la contrainte se voie, il n'entre dans aucun ancrage.`);
+  }
+  if (opt && opt.exercice) o.exercice = opt.exercice;
+  return o;
+}
+
 const EPV_TAUX_OBSTACLE = 0.10;
 
 const EPV_MIN_EXERCICES = 5;
@@ -1266,5 +1714,7 @@ function derives(series, devise) {
   return d;
 }
 
+
 export { derives, roicRetenu, profilSociete, moatPropre, preuvesMoat,
-         ancrageEPV, trajectoireROIC, mediane, cagr, pct, num, millions };
+         ancrageEPV, ancrageEVA, trajectoireROIC,
+         mediane, cagr, pct, num, millions };
