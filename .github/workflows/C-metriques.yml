@@ -1,23 +1,8 @@
 name: C metriques
-
-# Deux etages dans un seul fichier, volontairement : `prix` n'a de sens
-# qu'apres `metriques`, puisqu'il ne cote que les societes pre-qualifiees par
-# le ROIC. Les separer en deux workflows laisserait la possibilite de lancer
-# `prix` sur des metriques perimees, ce qui produirait des decotes calculees
-# contre des fondamentaux qui n'existent plus.
-
 on:
   schedule:
     - cron: '17 4 * * *'
   workflow_dispatch:
-
-# Un seul run a la fois. Sans ce garde-fou, un declenchement manuel pendant
-# que le cron tourne ferait ecrire deux processus dans les memes tables au
-# meme instant : les dernieres ecritures gagnent, et le resultat est un
-# melange de deux passages qu'aucun log ne permet de demeler.
-concurrency:
-  group: screener-metriques-prix
-  cancel-in-progress: false
 
 jobs:
   metriques:
@@ -25,83 +10,32 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-
       - name: Metriques via le noyau
         env:
           CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          # PLAFOND_ECRITURES N'EST PAS DEFINI, ET C'EST DELIBERE.
-          # Le script prend alors 0, c'est-a-dire aucun controle — le reglage
-          # correct en plan D1 payant. Poser cette variable ici reactiverait un
-          # plafond local qui, en payant, ne protege de rien et bloque tout :
-          # c'est exactement ce qui a fait echouer cinq runs sur un compteur
-          # de 69 720 ecritures fantomes.
-          # Pour revenir au plan gratuit, ajouter :  PLAFOND_ECRITURES: "70000"
+          PLAFOND_ECRITURES: "70000"
         run: node src/incr5_metriques.mjs
 
   prix:
     runs-on: ubuntu-latest
     needs: metriques
-    # 60 minutes et non 30. La pagination lit une douzaine de pages, et
-    # surtout le repli par ticker peut prendre jusqu'a 4 minutes 30 pour UN
-    # symbole radie (trois essais, 30 s de delai). Si la source changeait sa
-    # pagination, le repli porterait des centaines de tickers : mieux vaut un
-    # run long qu'un run coupe au milieu d'une ecriture.
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - run: pip install requests
-
       - name: Etage prix
         env:
           CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          # Sans ceci, Python accumule 8 Ko avant d'ecrire : le script
-          # travaille, le log ne bouge pas, et un run sain devient
-          # indiscernable d'un run bloque. C'est une cause de fausse alerte,
-          # pas de panne.
+          PLAFOND_ECRITURES: "70000"
           PYTHONUNBUFFERED: "1"
         run: python src/incr6_prix.py
-
-      # Publie l'etat reel de la base APRES l'etage prix. Un run vert ne dit
-      # pas ce qui a ete ecrit ; ces trois comptes, si. Ils ne coutent qu'une
-      # requete de lecture et rendent la progression verifiable d'un run a
-      # l'autre sans ouvrir la console.
-      - name: Etat de la base
-        if: always()
-        env:
-          CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
-          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
-          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
-        run: |
-          python - <<'PY'
-          import json, os, urllib.request
-          url = (f"https://api.cloudflare.com/client/v4/accounts/{os.environ['CF_ACCOUNT']}"
-                 f"/d1/database/{os.environ['CF_DB']}/query")
-          sql = ("SELECT (SELECT COUNT(*) FROM societe)  AS societes, "
-                 "       (SELECT COUNT(*) FROM comptes)  AS comptes, "
-                 "       (SELECT COUNT(*) FROM metriques) AS metriques, "
-                 "       (SELECT COUNT(*) FROM metriques WHERE cours IS NOT NULL) AS avec_cours")
-          req = urllib.request.Request(
-              url, json.dumps({"sql": sql, "params": []}).encode(),
-              {"Authorization": f"Bearer {os.environ['CF_TOKEN']}",
-               "Content-Type": "application/json"})
-          try:
-              with urllib.request.urlopen(req, timeout=30) as r:
-                  j = json.load(r)
-              for k, v in j["result"][0]["results"][0].items():
-                  print(f"  {k:<12} {v}")
-          except Exception as e:
-              print(f"  etat indisponible — {type(e).__name__} {e}")
-          PY
