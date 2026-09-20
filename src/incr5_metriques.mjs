@@ -128,7 +128,7 @@ function empreinte() {
 }
 
 async function main() {
-  console.log(`incr5_metriques v5 (noyau partage) — Run ${RUN_TS}`);
+  console.log(`incr5_metriques v6 (noyau partage) — Run ${RUN_TS}`);
   console.log(`empreinte ${empreinte()}`);
   console.log(`seuil de rentabilite forfaitaire : ${SEUIL} % — PAS un WACC`);
   console.log(`plafond d'ecritures : ${PLAFOND === 0 ? "AUCUN (controle desactive)" : PLAFOND} — origine : ${PLAFOND_ORIGINE}`);
@@ -313,12 +313,55 @@ async function main() {
       dette_sur_ca: detteCA, cp_sur_ca: cpCA,
       ebit_dispersion: ebitDisp, drapeaux: drapeaux.length ? drapeaux.join(",") : null,
       eva_capitaux: evaCap, eva_statut: evaStatut, eva_h: evaH,
+      _ca_der: der1?.ca ?? null, _assets_der: der1?.assets ?? null,
       score_moat: pts, score_moat_max: mx, biais_acquereur: biais,
       n_non_calculable: [roicMed, cg("ca"), cg("fcf"), mbMed].filter(x => x == null).length,
       exclusion: excl, maj: RUN_TS,
     };
     if (Number.isFinite(epv?.valeur)) compte("epv_calculable");
   }
+
+  phase("doublons");
+  // DOUBLE CONSOLIDATION. Christian Dior consolide LVMH : meme chiffre
+  // d'affaires, meme actif, deux lignes dans le classement pour un seul actif
+  // economique. Le test « peu de CA, beaucoup de capitaux propres » ne les
+  // attrape pas, justement parce que la holding consolide. Ce qui les trahit
+  // est l'IDENTITE du chiffre d'affaires.
+  //
+  // COMPARAISON PAR VOISINAGE, pas par classes. Un decoupage en tranches
+  // souffre d'un effet de frontiere — deux valeurs a 0,3 % tombent de part et
+  // d'autre — et regroupait 2,7 societes par tranche en moyenne, donc des
+  // faux positifs en masse. Trier puis comparer au voisin immediat supprime
+  // les deux defauts et reste lineaire.
+  const parDevise = {};
+  for (const [t, v] of Object.entries(rangs)) {
+    if (!(v._ca_der > 0)) continue;
+    const dev = (soc[t] || {}).devise || "?";
+    (parDevise[dev] ||= []).push([t, v._ca_der, v._assets_der]);
+  }
+  let nDoublons = 0;
+  for (const liste of Object.values(parDevise)) {
+    liste.sort((a, b) => a[1] - b[1]);
+    for (let i = 1; i < liste.length; i++) {
+      const [t1, c1, a1] = liste[i - 1], [t2, c2, a2] = liste[i];
+      // DEUX criteres. Le chiffre d'affaires seul produisait des faux
+      // positifs — Hermes et Kering se croisent a 0,4 % sans avoir de lien.
+      // Une holding de consolidation partage aussi le TOTAL DE BILAN ; deux
+      // societes distinctes n'ont jamais les deux a la fois.
+      if (!(c1 > 0) || (c2 - c1) / c1 > 0.002) continue;
+      if (!(a1 > 0) || !(a2 > 0) || Math.abs(a2 - a1) / a1 > 0.05) continue;
+      for (const [a, b] of [[t1, t2], [t2, t1]]) {
+        const d = rangs[a].drapeaux;
+        if (String(d || "").includes("doublon")) continue;
+        // Les deux lignes sont marquees, aucune n'est ecartee : le screener
+        // ne sait pas laquelle est la holding, l'analyse tranche.
+        rangs[a].drapeaux = (d ? d + "," : "") + "doublon:" + b;
+        nDoublons++;
+      }
+    }
+  }
+  compte("doublons", nDoublons);
+  console.log(`  ${nDoublons} lignes en double consolidation presumee`);
 
   phase("canari");
   const perdus = CANARI.filter(t => !etatCanari[t] || etatCanari[t].excl);
@@ -329,6 +372,7 @@ async function main() {
   }
 
   phase("differentiel");
+  for (const v of Object.values(rangs)) { delete v._ca_der; delete v._assets_der; }
   const cols = COLONNES.filter(c => c !== "maj");
   const existant = {};
   for (let p = 0; ; p++) {
