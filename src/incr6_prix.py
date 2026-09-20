@@ -64,6 +64,8 @@ LISTES_INTL = [
     ("prague-stock-exchange", ".PR"), ("budapest-stock-exchange", ".BD"),
     ("london-stock-exchange", ".L"), ("six-swiss-exchange", ".SW"),
     ("tokyo-stock-exchange", ".T"),
+    ("korea-stock-exchange", ".KS"), ("taiwan-stock-exchange", ".TW"),
+    ("toronto-stock-exchange", ".TO"),
 ]
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
@@ -378,7 +380,7 @@ def main():
               f"{_b.count(chr(10).encode()) + 1} lignes")
     except OSError:
         print("empreinte indisponible")
-    print(f"incr6_prix v8 — Run {RUN_TS}"
+    print(f"incr6_prix v9 — Run {RUN_TS}"
           + (f" — tranche {a.tranche}/{a.nb_tranches}" if a.tranche else ""))
 
     # ---- diagnostic demande : pourquoi la moitie de l'univers est ecartee ----
@@ -392,10 +394,14 @@ def main():
     print(f"  {mixte:5}  (hors exclusion) series a denominateur de ROIC mixte")
 
     # ---- cibles -------------------------------------------------------------
-    cibles = [l["ticker"] for l in d1(
-        "SELECT ticker FROM metriques WHERE exclusion IS NULL "
+    lignes_cibles = d1(
+        "SELECT ticker, eva_capitaux FROM metriques WHERE exclusion IS NULL "
         "AND roic_median >= ? ORDER BY roic_median DESC", [ROIC_MIN]
-    )[0]["results"]]
+    )[0]["results"]
+    # L'EVA est calculee a l'etage metriques ; elle voyage avec la cible
+    # plutot que d'imposer une seconde lecture de la table.
+    EVA = {l["ticker"]: l.get("eva_capitaux") for l in lignes_cibles}
+    cibles = [l["ticker"] for l in lignes_cibles]
     print(f"\n{len(cibles)} societes pre-qualifiees (ROIC median >= {ROIC_MIN} %)")
     if a.tranche:
         # Repartition par modulo : chaque tranche recoit un echantillon
@@ -537,7 +543,23 @@ def main():
         if bpa and bpa > 0:
             per_cour = cours / bpa
 
-        maj.append((t, cours, capi, epv, epv_sur_cours, fcf_y, per_cour, None, None))
+        # Seconde mesure, calculee par le noyau a l'etage metriques : on la
+        # rapporte au cours ici, ou la capitalisation est connue.
+        eva_sur_cours = None
+        if capi and EVA.get(t) is not None:
+            try:
+                eva_sur_cours = float(EVA[t]) / capi
+            except (TypeError, ValueError, ZeroDivisionError):
+                eva_sur_cours = None
+
+        # CONCORDANCE : la plus BASSE des deux mesures. Un dossier n'est
+        # retenu que si les deux voies pointent dans le meme sens ; retenir la
+        # plus haute reviendrait a choisir l'hypothese la plus flatteuse.
+        vals_c = [v for v in (epv_sur_cours, eva_sur_cours) if v is not None]
+        concordance = min(vals_c) if len(vals_c) == 2 else None
+
+        maj.append((t, cours, capi, epv, epv_sur_cours, fcf_y, per_cour,
+                    eva_sur_cours, concordance))
 
     print(f"  {len(maj)} cotations exploitables, {echecs} echecs")
 
@@ -560,7 +582,7 @@ def main():
     ecrites = 0
     for t, cours, capi, epv, esc, fy, pc, pm, ec in maj:
         d1("UPDATE metriques SET cours = ?, plancher_epv = ?, epv_sur_cours = ?, "
-           "fcf_yield = ?, per_courant = ?, per_median = ?, ecart_multiple = ?, "
+           "fcf_yield = ?, per_courant = ?, eva_sur_cours = ?, concordance = ?, "
            "maj = ? WHERE ticker = ?",
            [cours, epv, esc, fy, pc, pm, ec, RUN_TS, t])
         d1("UPDATE societe SET capitalisation = ? WHERE ticker = ?", [capi, t])
