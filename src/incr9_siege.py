@@ -92,7 +92,11 @@ PAYS = {
 
 
 def siege(cik, s):
-    """Rend (code_pays, libelle) ou (None, motif)."""
+    """Rend (code_pays, libelle, activite) ou (None, motif, None).
+
+    `sicDescription` decrit l'activite en clair — « Pharmaceutical
+    Preparations », « Steel Works », « Services-Prepackaged Software ». Il est
+    servi par le meme fichier que l'adresse : le recuperer ne coute rien."""
     url = SUBMISSIONS.format(cik=str(cik).zfill(10))
     req = urllib.request.Request(url, headers={"User-Agent": SEC_UA,
                                                "Accept": "application/json"})
@@ -101,11 +105,12 @@ def siege(cik, s):
             j = json.loads(r.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
         s.erreur(f"http_{e.code}", f"CIK {cik}")
-        return None, f"HTTP {e.code}"
+        return None, f"HTTP {e.code}", None
     except Exception as e:
         s.erreur("reseau_sec", f"CIK {cik} {type(e).__name__}")
-        return None, type(e).__name__
+        return None, type(e).__name__, None
 
+    sic = (j.get("sicDescription") or "").strip()
     adr = ((j.get("addresses") or {}).get("business") or {})
     # La description est preferee quand elle existe — « Cayman Islands » vaut
     # mieux que « E9 » a l'affichage — mais le code est ce qui est reellement
@@ -116,35 +121,41 @@ def siege(cik, s):
         s.compte("sans_adresse")
         # Marque plutot que None : sans cela, ces depots sont reinterroges a
         # chaque run et le compteur « reste a resoudre » ne descend jamais.
-        return "--", "adresse absente"
+        return "--", "adresse absente", sic
 
     if code_brut in CODES_US:
-        return "US", lib or code_brut
+        return "US", lib or code_brut, sic
     # Provinces canadiennes dans la nomenclature EDGAR : A0 Alberta,
     # A1 Colombie-Britannique, A6 Ontario, A8 Quebec... Une vingtaine de
     # societes ressortaient sous un code illisible.
     if code_brut in CODES_CANADA:
-        return "CA", lib or "Canada"
+        return "CA", lib or "Canada", sic
     if lib and lib.lower() in ETATS_US:
-        return "US", lib
+        return "US", lib, sic
 
     if lib:
         c = PAYS.get(lib.lower())
         if c:
-            return c, lib
+            return c, lib, sic
     # Code etranger non traduit : on le garde TEL QUEL plutot que d'inventer
     # une correspondance. L'essentiel — hors des Etats-Unis — est etabli, et
     # le code reste lisible pour completer la table plus tard.
     if code_brut and len(code_brut) <= 3:
         s.compte("code_non_traduit")
-        return code_brut, lib or code_brut
+        return code_brut, lib or code_brut, sic
     s.erreur("pays_inconnu", lib or code_brut)
-    return "??", lib or code_brut
+    return "??", lib or code_brut, sic
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--rejouer", action="store_true",
+                    help="reinterroge les societes deja resolues, pour "
+                         "rattraper le secteur")
+    a = ap.parse_args()
     s = sonde("incr9_siege")
-    print(f"incr9_siege v4 — Run {RUN_TS}")
+    print(f"incr9_siege v5 — Run {RUN_TS}")
 
     s.phase("cibles")
     # Seules les societes analysables et jamais resolues. `source_eligibilite`
@@ -154,8 +165,10 @@ def main():
         "SELECT s.ticker, s.cik FROM societe s "
         "JOIN metriques m ON m.ticker = s.ticker "
         "WHERE s.cik IS NOT NULL AND m.exclusion IS NULL "
-        "AND (s.source_eligibilite IS NULL OR s.source_eligibilite NOT LIKE 'siege SEC%') "
-        "ORDER BY m.roic_median DESC LIMIT ?", [LOT])[0]["results"]
+        + ("AND (s.secteur IS NULL OR s.secteur = '') "
+           if a.rejouer else
+           "AND (s.source_eligibilite IS NULL OR s.source_eligibilite NOT LIKE 'siege SEC%') ")
+        + "ORDER BY m.roic_median DESC LIMIT ?", [LOT])[0]["results"]
     print(f"  {len(cibles)} societes a resoudre (lot de {LOT})")
     if not cibles:
         print("  toutes resolues — rien a faire")
@@ -165,14 +178,14 @@ def main():
     s.phase("interrogation")
     maj, etrangeres = [], 0
     for i, l in enumerate(cibles, 1):
-        code, lib = siege(l["cik"], s)
+        code, lib, act = siege(l["cik"], s)
         time.sleep(0.15)          # SEC : 10 requetes par seconde maximum
         if code is None:
             continue
         if code not in ("US", "--"):
             etrangeres += 1
             s.compte("etranger_" + code)
-        maj.append((l["ticker"], code, lib))
+        maj.append((l["ticker"], code, lib, act))
         if i % 200 == 0:
             print(f"  {i}/{len(cibles)} — {etrangeres} sieges hors US")
 
@@ -181,7 +194,7 @@ def main():
     s.phase("canari")
     # Temoin : Apple doit ressortir en Californie. Si le champ lu n'est plus
     # celui qu'on croit, ce controle le dit avant d'ecrire 1 200 lignes.
-    temoin = next((c for t, c, _ in maj if t == "AAPL"), None)
+    temoin = next((c for t, c, _, _ in maj if t == "AAPL"), None)
     if temoin is not None and temoin != "US":
         msg = f"canari rouge : AAPL siege = {temoin}"
         print("PANNE : " + msg)
@@ -195,13 +208,18 @@ def main():
     for i in range(0, len(maj), 10):
         lot = maj[i:i + 10]
         vals, params = [], []
-        for t, code, lib in lot:
-            vals.append("(?, ?, ?, ?)")
-            params += [t, code, f"siege SEC : {lib[:60]}", RUN_TS]
-        d1("INSERT INTO societe (ticker, pays_siege, source_eligibilite, maj) "
-           "VALUES " + ", ".join(vals) + " ON CONFLICT(ticker) DO UPDATE SET "
+        for t, code, lib, act in lot:
+            vals.append("(?, ?, ?, ?, ?)")
+            params += [t, code, f"siege SEC : {lib[:60]}", (act or "")[:70], RUN_TS]
+        d1("INSERT INTO societe (ticker, pays_siege, source_eligibilite, "
+           "secteur, maj) VALUES " + ", ".join(vals) +
+           " ON CONFLICT(ticker) DO UPDATE SET "
            "pays_siege = excluded.pays_siege, "
            "source_eligibilite = excluded.source_eligibilite, "
+           # Le secteur de VanEck, quand il existe, est plus lisible que le
+           # libelle SIC : il n'est pas ecrase.
+           "secteur = COALESCE(NULLIF(societe.secteur, ''), "
+           "                   NULLIF(excluded.secteur, '')), "
            "maj = excluded.maj", params, lignes=len(lot), table="societe")
         n += len(lot)
         if n % 400 == 0 or n == len(maj):
