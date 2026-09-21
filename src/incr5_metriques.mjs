@@ -128,7 +128,7 @@ function empreinte() {
 }
 
 async function main() {
-  console.log(`incr5_metriques v8 (noyau partage) — Run ${RUN_TS}`);
+  console.log(`incr5_metriques v9 (noyau partage) — Run ${RUN_TS}`);
   console.log(`empreinte ${empreinte()}`);
   console.log(`seuil de rentabilite forfaitaire : ${SEUIL} % — PAS un WACC`);
   console.log(`plafond d'ecritures : ${PLAFOND === 0 ? "AUCUN (controle desactive)" : PLAFOND} — origine : ${PLAFOND_ORIGINE}`);
@@ -318,7 +318,7 @@ async function main() {
       eva_capitaux: evaCap, eva_statut: evaStatut, eva_h: evaH,
       // `assets` n'existe pas dans les lignes derivees : il reste dans les
       // series brutes. Meme piege que `shares` ci-dessus.
-      _ca_der: der1?.ca ?? null,
+      _ca_der: der1?.ca ?? null, _ebit_der: der1?.ebit ?? null,
       _assets_der: (ans.length ? series.assets?.[ans[ans.length - 1]] : null) ?? null,
       score_moat: pts, score_moat_max: mx, biais_acquereur: biais,
       n_non_calculable: [roicMed, cg("ca"), cg("fcf"), mbMed].filter(x => x == null).length,
@@ -343,31 +343,38 @@ async function main() {
   for (const [t, v] of Object.entries(rangs)) {
     if (!(v._ca_der > 0)) continue;
     const dev = (soc[t] || {}).devise || "?";
-    (parDevise[dev] ||= []).push([t, v._ca_der, v._assets_der]);
+    (parDevise[dev] ||= []).push([t, v._ca_der, v._assets_der, v._ebit_der]);
   }
+  // TROIS CRITERES, CALIBRES PAR SIMULATION sur 3 500 societes sans lien.
+  // CA seul a 0,2 % et bilan a 5 % : ~149 lignes fortuites, 129 observees.
+  // CA a 0,01 % et bilan a 2 % : ~2,5 paires fortuites, 2 observees — mais
+  // LVMH-Dior passait a travers, leur chiffre d'affaires differant de plus de
+  // 0,01 %. Le RESULTAT D'EXPLOITATION est le critere que partagent les
+  // consolidations et que le hasard ne reproduit pas : avec lui, le CA peut
+  // tolerer 1 % et les coincidences tombent sous une paire.
+  // Balayage de FENETRE, pas de voisin : a 1 % de tolerance, une troisieme
+  // societe peut s'intercaler entre les deux membres d'une paire.
   let nDoublons = 0;
+  const marquer = (a, b) => {
+    const d = rangs[a].drapeaux;
+    if (String(d || "").includes("doublon")) return;
+    rangs[a].drapeaux = (d ? d + "," : "") + "doublon:" + b;
+    nDoublons++;
+  };
   for (const liste of Object.values(parDevise)) {
     liste.sort((a, b) => a[1] - b[1]);
-    for (let i = 1; i < liste.length; i++) {
-      const [t1, c1, a1] = liste[i - 1], [t2, c2, a2] = liste[i];
-      // SEUILS CALIBRES PAR SIMULATION, pas sur quelques exemples. A 0,2 %
-      // sur le CA et 5 % sur le bilan, 3 500 societes SANS AUCUN LIEN
-      // produisaient ~149 lignes marquees : le run en a trouve 129, donc
-      // essentiellement des coincidences. Les chiffres d'affaires sont si
-      // serres a cette echelle que deux voisins tombent souvent a 0,2 %.
-      // Or une double consolidation publie le MEME chiffre d'affaires
-      // consolide, au million pres. A 0,01 % et 2 %, la simulation ne laisse
-      // que ~4 lignes fortuites, et LVMH-Dior passe toujours (CA identique,
-      // bilans a 1,3 %).
-      if (!(c1 > 0) || (c2 - c1) / c1 > 0.0001) continue;
-      if (!(a1 > 0) || !(a2 > 0) || Math.abs(a2 - a1) / a1 > 0.02) continue;
-      for (const [a, b] of [[t1, t2], [t2, t1]]) {
-        const d = rangs[a].drapeaux;
-        if (String(d || "").includes("doublon")) continue;
+    for (let i = 0; i < liste.length; i++) {
+      const [t1, c1, a1, e1] = liste[i];
+      if (!(a1 > 0) || !Number.isFinite(e1) || e1 === 0) continue;
+      for (let k = i + 1; k < liste.length; k++) {
+        const [t2, c2, a2, e2] = liste[k];
+        if ((c2 - c1) / c1 > 0.01) break;          // hors fenetre, on arrete
+        if (!(a2 > 0) || Math.abs(a2 - a1) / a1 > 0.03) continue;
+        if (!Number.isFinite(e2) || Math.abs(e2 - e1) / Math.abs(e1) > 0.02) continue;
         // Les deux lignes sont marquees, aucune n'est ecartee : le screener
         // ne sait pas laquelle est la holding, l'analyse tranche.
-        rangs[a].drapeaux = (d ? d + "," : "") + "doublon:" + b;
-        nDoublons++;
+        marquer(t1, t2);
+        marquer(t2, t1);
       }
     }
   }
@@ -383,7 +390,7 @@ async function main() {
   }
 
   phase("differentiel");
-  for (const v of Object.values(rangs)) { delete v._ca_der; delete v._assets_der; }
+  for (const v of Object.values(rangs)) { delete v._ca_der; delete v._assets_der; delete v._ebit_der; }
   const cols = COLONNES.filter(c => c !== "maj");
   const existant = {};
   for (let p = 0; ; p++) {
