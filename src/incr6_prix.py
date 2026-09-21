@@ -380,7 +380,7 @@ def main():
               f"{_b.count(chr(10).encode()) + 1} lignes")
     except OSError:
         print("empreinte indisponible")
-    print(f"incr6_prix v10 — Run {RUN_TS}"
+    print(f"incr6_prix v11 — Run {RUN_TS}"
           + (f" — tranche {a.tranche}/{a.nb_tranches}" if a.tranche else ""))
 
     # ---- diagnostic demande : pourquoi la moitie de l'univers est ecartee ----
@@ -395,12 +395,18 @@ def main():
 
     # ---- cibles -------------------------------------------------------------
     lignes_cibles = d1(
-        "SELECT ticker, eva_capitaux FROM metriques WHERE exclusion IS NULL "
+        "SELECT ticker, eva_capitaux, ca_cagr, fcf_cagr FROM metriques WHERE exclusion IS NULL "
         "AND roic_median >= ? ORDER BY roic_median DESC", [ROIC_MIN]
     )[0]["results"]
     # L'EVA est calculee a l'etage metriques ; elle voyage avec la cible
     # plutot que d'imposer une seconde lecture de la table.
     EVA = {l["ticker"]: l.get("eva_capitaux") for l in lignes_cibles}
+    # Croissance DEMONTREE : le plus bas du CAGR du chiffre d'affaires et de
+    # celui du FCF, comme l'exige le cadre — jamais le plus flatteur.
+    DEMONTRE = {}
+    for l in lignes_cibles:
+        v = [x for x in (l.get("ca_cagr"), l.get("fcf_cagr")) if x is not None]
+        DEMONTRE[l["ticker"]] = min(v) if v else None
     cibles = [l["ticker"] for l in lignes_cibles]
     print(f"\n{len(cibles)} societes pre-qualifiees (ROIC median >= {ROIC_MIN} %)")
     if a.tranche:
@@ -511,6 +517,32 @@ def main():
             if (der.get("cfo") is not None and der.get("capex") is not None) else None
         fcf_y = (fcf_der / capi) if (fcf_der is not None and capi) else None
 
+        # ── TROISIEME REGARD : proxy du SEUIL N ─────────────────────────────
+        # Croissance requise au taux-obstacle PEA pour que le prix rapporte
+        # 10 % par an. Le cadre separe deux croissances et interdit de les
+        # fusionner : celle-ci est N, calculee au taux-obstacle — pas le point
+        # 2 de la note PRIX, calcule au WACC.
+        # EPV et EVA partagent le meme numerateur et la meme dette nette : leur
+        # accord etait en partie mecanique. Celle-ci est reellement
+        # independante — elle part du FCF et non du resultat d'exploitation,
+        # elle traite la tresorerie en sens INVERSE (le cash gonfle la
+        # capitalisation sans produire de flux, donc DURCIT le critere), et
+        # elle confronte le prix a la trajectoire reellement realisee.
+        # FCF median des trois derniers exercices : un capex exceptionnel ou
+        # un BFR favorable deformerait sinon tout le calcul.
+        fcfs = [annees[a]["cfo"] - abs(annees[a]["capex"]) for a in ans[-3:]
+                if annees[a].get("cfo") is not None
+                and annees[a].get("capex") is not None]
+        g_imp = None
+        if len(fcfs) >= 2 and capi:
+            fcf_med = st.median(fcfs)
+            if fcf_med > 0:
+                y = fcf_med / capi
+                # Prix = FCF x (1+g) / (r - g), resolu en g, au taux-obstacle
+                # PEA de 10 % : la croissance perpetuelle que le cours suppose.
+                g_imp = 100 * (TAUX_OBSTACLE_EPV - y) / (1 + y)
+        g_dem = DEMONTRE.get(t)
+
         epv = epv_sur_cours = None
         ebits = [annees[a]["ebit"] for a in ans if annees[a].get("ebit") is not None]
         taux = [annees[a]["tax"] / annees[a]["pretax"] for a in ans
@@ -570,7 +602,7 @@ def main():
         concordance = min(vals_c) if len(vals_c) == 2 else None
 
         maj.append((t, cours, capi, epv, epv_sur_cours, fcf_y, per_cour,
-                    eva_sur_cours, concordance, part_tres))
+                    eva_sur_cours, concordance, part_tres, g_imp, g_dem))
 
     print(f"  {len(maj)} cotations exploitables, {echecs} echecs")
 
@@ -591,11 +623,12 @@ def main():
 
     # ---- ecriture -----------------------------------------------------------
     ecrites = 0
-    for t, cours, capi, epv, esc, fy, pc, pm, ec, pt in maj:
+    for t, cours, capi, epv, esc, fy, pc, pm, ec, pt, gi, gd in maj:
         d1("UPDATE metriques SET cours = ?, plancher_epv = ?, epv_sur_cours = ?, "
            "fcf_yield = ?, per_courant = ?, eva_sur_cours = ?, concordance = ?, "
-           "part_tresorerie = ?, maj = ? WHERE ticker = ?",
-           [cours, epv, esc, fy, pc, pm, ec, pt, RUN_TS, t])
+           "part_tresorerie = ?, croissance_implicite = ?, "
+           "croissance_demontree = ?, maj = ? WHERE ticker = ?",
+           [cours, epv, esc, fy, pc, pm, ec, pt, gi, gd, RUN_TS, t])
         d1("UPDATE societe SET capitalisation = ? WHERE ticker = ?", [capi, t])
         ecrites += 1
         if ecrites % 200 == 0 or ecrites == len(maj):
