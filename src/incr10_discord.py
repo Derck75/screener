@@ -34,7 +34,10 @@ from commun import d1, journal, sonde, RUN_TS  # noqa: E402
 WEBHOOK = os.environ.get("DISCORD_WEBHOOK", "")
 PLAFOND_NOMS = int(os.environ.get("PLAFOND_NOMS", "5"))
 
-# Candidate au sens de la notification hebdomadaire. Volontairement plus
+# Candidate au sens de la notification hebdomadaire. Le critere de
+# croissance est un PROXY DU SEUIL N (bande verte, ratio <= 0,80), calcule au
+# taux-obstacle — jamais le point 2 de la note PRIX, que le cadre calcule au
+# WACC et interdit de fusionner avec N. Volontairement plus
 # exigeant que le preset `strict` du screener : on ne signale pas ce qu'on
 # consulte, on signale ce qui merite qu'on s'arrete.
 CANDIDATE = """
@@ -44,6 +47,11 @@ CANDIDATE = """
     AND m.ca_cagr > 0 AND m.fcf_cagr > 0
     AND m.epv_sur_cours >= 0.60
     AND (s.suivi_serveur IS NULL OR s.suivi_serveur = 0)
+    AND m.croissance_implicite IS NOT NULL AND m.croissance_demontree IS NOT NULL
+    AND ((m.croissance_demontree > 0
+          AND m.croissance_implicite <= 0.8 * m.croissance_demontree)
+      OR (m.croissance_demontree <= 0
+          AND m.croissance_implicite <= m.croissance_demontree))
 """
 
 # L'exception : tout doit etre coche. Sur l'etat du 18/09, une seule societe
@@ -150,6 +158,10 @@ def ligne(c):
          + f"Profits actuels : **{round(100 * c['epv_sur_cours'])} % du cours**"
          + (f" · avec croissance : {round(100 * c['eva_sur_cours'])} %"
             if c.get("eva_sur_cours") is not None else "") + "\n"
+         + (f"Le prix suppose **{c['croissance_implicite']:+.1f} %/an**, "
+            f"la société a fait {c['croissance_demontree']:+.1f} %\n"
+            if c.get("croissance_implicite") is not None
+            and c.get("croissance_demontree") is not None else "")
          + f"ROIC {round(c['roic_median'])} % sur {c['n_ex_total']} ex. · "
          + f"moat {c['score_moat']}/{c['score_moat_max']} · {pea} · {pays}{ve}{dr}")
     return t
@@ -164,14 +176,15 @@ def main():
     a = ap.parse_args()
 
     s = sonde("incr10_discord")
-    print(f"incr10_discord v4 — Run {RUN_TS}")
+    print(f"incr10_discord v5 — Run {RUN_TS}")
 
     s.phase("lecture")
     base = ("FROM metriques m JOIN societe s ON s.ticker = m.ticker "
             "WHERE " + CANDIDATE)
     champs = ("m.ticker, s.nom, s.pays_siege, s.eligible_pea, s.vaneck, s.secteur, "
               "m.epv_sur_cours, m.roic_median, m.n_ex_total, m.score_moat, "
-              "m.score_moat_max, m.drapeaux, m.eva_sur_cours, m.part_tresorerie")
+              "m.score_moat_max, m.drapeaux, m.eva_sur_cours, m.part_tresorerie, "
+              "m.croissance_implicite, m.croissance_demontree")
     candidates = d1(f"SELECT {champs} {base} ORDER BY "
                     f"(COALESCE(m.concordance, m.epv_sur_cours) > 1.0) ASC, "
                     f"COALESCE(m.concordance, m.epv_sur_cours) DESC"
@@ -257,7 +270,11 @@ def main():
                   "— ce que vaudrait la société si elle cessait de croître — à "
                   "ce que le marché la paie. À 60 %, six euros sur dix sont "
                   "couverts par les profits déjà dégagés, quatre reposent sur "
-                  "une croissance à démontrer.*"
+                  "une croissance à démontrer. La ligne suivante confronte la "
+                  "croissance que suppose le prix à celle réellement réalisée : "
+                  "chaque société signalée n'exige pas plus de 80 % de sa propre "
+                  "trajectoire pour rapporter 10 % par an — bande verte du "
+                  "seuil N.*"
                   "\n\n🔴 **Watchlist, pas des idées.** Fenêtre courte hors "
                   "États-Unis, moat proxy, aucune fair value.")
         titre = "📋 Screener — nouvelles candidates"
