@@ -128,7 +128,7 @@ function empreinte() {
 }
 
 async function main() {
-  console.log(`incr5_metriques v7 (noyau partage) — Run ${RUN_TS}`);
+  console.log(`incr5_metriques v8 (noyau partage) — Run ${RUN_TS}`);
   console.log(`empreinte ${empreinte()}`);
   console.log(`seuil de rentabilite forfaitaire : ${SEUIL} % — PAS un WACC`);
   console.log(`plafond d'ecritures : ${PLAFOND === 0 ? "AUCUN (controle desactive)" : PLAFOND} — origine : ${PLAFOND_ORIGINE}`);
@@ -350,12 +350,17 @@ async function main() {
     liste.sort((a, b) => a[1] - b[1]);
     for (let i = 1; i < liste.length; i++) {
       const [t1, c1, a1] = liste[i - 1], [t2, c2, a2] = liste[i];
-      // DEUX criteres. Le chiffre d'affaires seul produisait des faux
-      // positifs — Hermes et Kering se croisent a 0,4 % sans avoir de lien.
-      // Une holding de consolidation partage aussi le TOTAL DE BILAN ; deux
-      // societes distinctes n'ont jamais les deux a la fois.
-      if (!(c1 > 0) || (c2 - c1) / c1 > 0.002) continue;
-      if (!(a1 > 0) || !(a2 > 0) || Math.abs(a2 - a1) / a1 > 0.05) continue;
+      // SEUILS CALIBRES PAR SIMULATION, pas sur quelques exemples. A 0,2 %
+      // sur le CA et 5 % sur le bilan, 3 500 societes SANS AUCUN LIEN
+      // produisaient ~149 lignes marquees : le run en a trouve 129, donc
+      // essentiellement des coincidences. Les chiffres d'affaires sont si
+      // serres a cette echelle que deux voisins tombent souvent a 0,2 %.
+      // Or une double consolidation publie le MEME chiffre d'affaires
+      // consolide, au million pres. A 0,01 % et 2 %, la simulation ne laisse
+      // que ~4 lignes fortuites, et LVMH-Dior passe toujours (CA identique,
+      // bilans a 1,3 %).
+      if (!(c1 > 0) || (c2 - c1) / c1 > 0.0001) continue;
+      if (!(a1 > 0) || !(a2 > 0) || Math.abs(a2 - a1) / a1 > 0.02) continue;
       for (const [a, b] of [[t1, t2], [t2, t1]]) {
         const d = rangs[a].drapeaux;
         if (String(d || "").includes("doublon")) continue;
