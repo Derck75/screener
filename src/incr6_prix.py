@@ -380,7 +380,7 @@ def main():
               f"{_b.count(chr(10).encode()) + 1} lignes")
     except OSError:
         print("empreinte indisponible")
-    print(f"incr6_prix v9 — Run {RUN_TS}"
+    print(f"incr6_prix v10 — Run {RUN_TS}"
           + (f" — tranche {a.tranche}/{a.nb_tranches}" if a.tranche else ""))
 
     # ---- diagnostic demande : pourquoi la moitie de l'univers est ecartee ----
@@ -496,6 +496,17 @@ def main():
                 actions = None      # champ invalide, societe conservee
 
         capi = capi_liste or (cours * actions if actions else None)
+
+        # PART DE TRESORERIE NETTE. EPV et EVA deduisent la MEME dette nette :
+        # une tresorerie massive gonfle les deux dans le meme sens, et leur
+        # accord ne prouve alors rien — Noah sortait a 284 % d'un cote, 257 %
+        # de l'autre. Mesurer ce que le cash represente dans le prix rend ce
+        # biais commun visible. Qu'il soit accessible — rapatriable,
+        # distribuable — est une question d'analyse, pas de calcul.
+        part_tres = None
+        if capi:
+            nette = (der.get("cash") or 0) - (der.get("debt") or 0)
+            part_tres = (nette / capi) if nette > 0 else 0.0
         fcf_der = (der["cfo"] - abs(der["capex"])) \
             if (der.get("cfo") is not None and der.get("capex") is not None) else None
         fcf_y = (fcf_der / capi) if (fcf_der is not None and capi) else None
@@ -559,7 +570,7 @@ def main():
         concordance = min(vals_c) if len(vals_c) == 2 else None
 
         maj.append((t, cours, capi, epv, epv_sur_cours, fcf_y, per_cour,
-                    eva_sur_cours, concordance))
+                    eva_sur_cours, concordance, part_tres))
 
     print(f"  {len(maj)} cotations exploitables, {echecs} echecs")
 
@@ -580,11 +591,11 @@ def main():
 
     # ---- ecriture -----------------------------------------------------------
     ecrites = 0
-    for t, cours, capi, epv, esc, fy, pc, pm, ec in maj:
+    for t, cours, capi, epv, esc, fy, pc, pm, ec, pt in maj:
         d1("UPDATE metriques SET cours = ?, plancher_epv = ?, epv_sur_cours = ?, "
            "fcf_yield = ?, per_courant = ?, eva_sur_cours = ?, concordance = ?, "
-           "maj = ? WHERE ticker = ?",
-           [cours, epv, esc, fy, pc, pm, ec, RUN_TS, t])
+           "part_tresorerie = ?, maj = ? WHERE ticker = ?",
+           [cours, epv, esc, fy, pc, pm, ec, pt, RUN_TS, t])
         d1("UPDATE societe SET capitalisation = ? WHERE ticker = ?", [capi, t])
         ecrites += 1
         if ecrites % 200 == 0 or ecrites == len(maj):
