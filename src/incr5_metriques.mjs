@@ -128,7 +128,7 @@ function empreinte() {
 }
 
 async function main() {
-  console.log(`incr5_metriques v6 (noyau partage) — Run ${RUN_TS}`);
+  console.log(`incr5_metriques v7 (noyau partage) — Run ${RUN_TS}`);
   console.log(`empreinte ${empreinte()}`);
   console.log(`seuil de rentabilite forfaitaire : ${SEUIL} % — PAS un WACC`);
   console.log(`plafond d'ecritures : ${PLAFOND === 0 ? "AUCUN (controle desactive)" : PLAFOND} — origine : ${PLAFOND_ORIGINE}`);
@@ -272,7 +272,10 @@ async function main() {
     // Le taux-obstacle forfaitaire remplace le WACC — pas de beta, donc pas
     // de bruit qui n'a rien a voir avec la qualite de la societe.
     let evaCap = null, evaStatut = null, evaH = null;
-    const actionsDer = der1?.shares;
+    // `actions`, pas `shares` : le noyau renomme le poste dans ses lignes
+    // derivees. Lire `shares` rendait undefined EN SILENCE — l'operateur ?.
+    // ne signale rien — et la brique EVA ne s'executait jamais.
+    const actionsDer = der1?.actions;
     if (actionsDer > 0) {
       evaH = dureeFade(pts, mx);
       try {
@@ -313,7 +316,10 @@ async function main() {
       dette_sur_ca: detteCA, cp_sur_ca: cpCA,
       ebit_dispersion: ebitDisp, drapeaux: drapeaux.length ? drapeaux.join(",") : null,
       eva_capitaux: evaCap, eva_statut: evaStatut, eva_h: evaH,
-      _ca_der: der1?.ca ?? null, _assets_der: der1?.assets ?? null,
+      // `assets` n'existe pas dans les lignes derivees : il reste dans les
+      // series brutes. Meme piege que `shares` ci-dessus.
+      _ca_der: der1?.ca ?? null,
+      _assets_der: (ans.length ? series.assets?.[ans[ans.length - 1]] : null) ?? null,
       score_moat: pts, score_moat_max: mx, biais_acquereur: biais,
       n_non_calculable: [roicMed, cg("ca"), cg("fcf"), mbMed].filter(x => x == null).length,
       exclusion: excl, maj: RUN_TS,
