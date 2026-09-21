@@ -380,7 +380,7 @@ def main():
               f"{_b.count(chr(10).encode()) + 1} lignes")
     except OSError:
         print("empreinte indisponible")
-    print(f"incr6_prix v11 — Run {RUN_TS}"
+    print(f"incr6_prix v12 — Run {RUN_TS}"
           + (f" — tranche {a.tranche}/{a.nb_tranches}" if a.tranche else ""))
 
     # ---- diagnostic demande : pourquoi la moitie de l'univers est ecartee ----
@@ -542,6 +542,13 @@ def main():
                 # PEA de 10 % : la croissance perpetuelle que le cours suppose.
                 g_imp = 100 * (TAUX_OBSTACLE_EPV - y) / (1 + y)
         g_dem = DEMONTRE.get(t)
+        # Le rendement FCF AFFICHE suit la meme mediane que le calcul. Trigano
+        # affichait 19,7 % sur le dernier exercice pour une croissance
+        # implicite calculee a +4,2 % sur la mediane : un exercice de
+        # destockage — du BFR libere une seule fois — faisait paraitre la
+        # societe trois fois et demie moins chere qu'elle ne l'est.
+        if len(fcfs) >= 2 and capi:
+            fcf_y = st.median(fcfs) / capi
 
         epv = epv_sur_cours = None
         ebits = [annees[a]["ebit"] for a in ans if annees[a].get("ebit") is not None]
