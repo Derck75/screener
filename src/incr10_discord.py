@@ -138,6 +138,8 @@ def ligne(c):
     pea = "PEA" if c.get("eligible_pea") == 1 else "CTO"
     ve = " · VanEck" if c.get("vaneck") else ""
     dr = " 🚩" + str(c["drapeaux"]).split(",")[0] if c.get("drapeaux") else ""
+    if (c.get("part_tresorerie") or 0) >= 0.4:
+        dr += f" 💰 trésorerie {round(100 * c['part_tresorerie'])} % du prix"
     act = activite(c.get("secteur"))
     # Le NOM d'abord, en gras : c'est ce qu'on lit. Le ticker suit, discret —
     # il sert a interroger l'outil, pas a reconnaitre la societe.
@@ -145,7 +147,9 @@ def ligne(c):
          + (f"{act}\n" if act else "")
          # Formulation directe plutot que le sigle : « EPV/cours 60 % » ne dit
          # rien tant qu'on n'a pas la definition en tete.
-         + f"Profits actuels : **{round(100 * c['epv_sur_cours'])} % du cours**\n"
+         + f"Profits actuels : **{round(100 * c['epv_sur_cours'])} % du cours**"
+         + (f" · avec croissance : {round(100 * c['eva_sur_cours'])} %"
+            if c.get("eva_sur_cours") is not None else "") + "\n"
          + f"ROIC {round(c['roic_median'])} % sur {c['n_ex_total']} ex. · "
          + f"moat {c['score_moat']}/{c['score_moat_max']} · {pea} · {pays}{ve}{dr}")
     return t
@@ -160,15 +164,17 @@ def main():
     a = ap.parse_args()
 
     s = sonde("incr10_discord")
-    print(f"incr10_discord v3 — Run {RUN_TS}")
+    print(f"incr10_discord v4 — Run {RUN_TS}")
 
     s.phase("lecture")
     base = ("FROM metriques m JOIN societe s ON s.ticker = m.ticker "
             "WHERE " + CANDIDATE)
     champs = ("m.ticker, s.nom, s.pays_siege, s.eligible_pea, s.vaneck, s.secteur, "
               "m.epv_sur_cours, m.roic_median, m.n_ex_total, m.score_moat, "
-              "m.score_moat_max, m.drapeaux")
-    candidates = d1(f"SELECT {champs} {base} ORDER BY m.epv_sur_cours DESC"
+              "m.score_moat_max, m.drapeaux, m.eva_sur_cours, m.part_tresorerie")
+    candidates = d1(f"SELECT {champs} {base} ORDER BY "
+                    f"(COALESCE(m.concordance, m.epv_sur_cours) > 1.0) ASC, "
+                    f"COALESCE(m.concordance, m.epv_sur_cours) DESC"
                     )[0]["results"]
     deja = {l["ticker"] for l in
             d1("SELECT ticker FROM notifications")[0]["results"]}
