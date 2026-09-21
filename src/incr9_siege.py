@@ -111,7 +111,22 @@ def siege(cik, s):
         return None, type(e).__name__, None
 
     sic = (j.get("sicDescription") or "").strip()
-    adr = ((j.get("addresses") or {}).get("business") or {})
+    # CHAINE DE REPLI. Les emetteurs etrangers qui deposent un 20-F laissent
+    # souvent l'adresse d'etablissement vide : Criteo, Vipshop, Yalla et Noah
+    # ressortaient « -- », c'est-a-dire precisement les societes que ce script
+    # existe pour signaler. On lit l'adresse d'etablissement, puis l'adresse
+    # postale, puis le lieu d'incorporation — moins parlant (les Caimans pour
+    # une chinoise) mais toujours mieux qu'une case vide.
+    ads = j.get("addresses") or {}
+    adr = ads.get("business") or {}
+    if not (adr.get("stateOrCountry") or adr.get("stateOrCountryDescription")):
+        adr = ads.get("mailing") or {}
+    if not (adr.get("stateOrCountry") or adr.get("stateOrCountryDescription")):
+        adr = {"stateOrCountry": j.get("stateOfIncorporation") or "",
+               "stateOrCountryDescription":
+                   j.get("stateOfIncorporationDescription") or ""}
+        if adr["stateOrCountry"] or adr["stateOrCountryDescription"]:
+            s.compte("repli_incorporation")
     # La description est preferee quand elle existe — « Cayman Islands » vaut
     # mieux que « E9 » a l'affichage — mais le code est ce qui est reellement
     # servi dans la plupart des depots.
@@ -155,7 +170,7 @@ def main():
                          "rattraper le secteur")
     a = ap.parse_args()
     s = sonde("incr9_siege")
-    print(f"incr9_siege v5 — Run {RUN_TS}")
+    print(f"incr9_siege v6 — Run {RUN_TS}")
 
     s.phase("cibles")
     # Seules les societes analysables et jamais resolues. `source_eligibilite`
@@ -167,7 +182,8 @@ def main():
         "WHERE s.cik IS NOT NULL AND m.exclusion IS NULL "
         + ("AND (s.secteur IS NULL OR s.secteur = '') "
            if a.rejouer else
-           "AND (s.source_eligibilite IS NULL OR s.source_eligibilite NOT LIKE 'siege SEC%') ")
+           "AND (s.source_eligibilite IS NULL "
+           "OR s.source_eligibilite NOT LIKE 'siege SEC%' OR s.pays_siege = '--') ")
         + "ORDER BY m.roic_median DESC LIMIT ?", [LOT])[0]["results"]
     print(f"  {len(cibles)} societes a resoudre (lot de {LOT})")
     if not cibles:
