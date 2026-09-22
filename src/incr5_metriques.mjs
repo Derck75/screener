@@ -38,6 +38,18 @@ const PLAFOND_ORIGINE = (PLAFOND_BRUT === undefined || PLAFOND_BRUT === "")
 const RUN_TS = new Date().toISOString().slice(0, 19) + "Z";
 const CANARI = ["AAPL", "MSFT", "V", "MA", "NVDA"];
 
+// FINANCIERES PAR ACTIVITE DECLAREE. Le test de bilan du noyau cherche un
+// profil bancaire ou foncier — dette rapportee au chiffre d'affaires. Un
+// assureur n'en a pas : il porte des PROVISIONS TECHNIQUES, pas de la dette,
+// et Munich Re, Talanx ou Mapfre passaient le filtre. Or son ROIC mesure le
+// rendement de ses placements, et le cadre classe les financieres parmi les
+// societes dont le FCF n'est pas exploitable.
+// Les COURTIERS et agents sont epargnes : Marsh, Aon, Brown & Brown portent
+// « insurance » dans leur libelle SEC mais n'ont aucun bilan de risque, et
+// leur ROIC est reel.
+const ACTIVITE_FINANCIERE = /insurance|assurance|\bbank|banque|savings institution|mortgage bankers/i;
+const ACTIVITE_EPARGNEE = /broker|agent|courtage/i;
+
 // Duree de fade de la brique EVA, deduite du score de moat PROXY. Le cadre
 // reserve vingt ans a un verdict Wide d'analyste ; un proxy ne l'autorise
 // pas — quinze ans est le maximum ici, et c'est deja genereux.
@@ -128,14 +140,14 @@ function empreinte() {
 }
 
 async function main() {
-  console.log(`incr5_metriques v9 (noyau partage) — Run ${RUN_TS}`);
+  console.log(`incr5_metriques v10 (noyau partage) — Run ${RUN_TS}`);
   console.log(`empreinte ${empreinte()}`);
   console.log(`seuil de rentabilite forfaitaire : ${SEUIL} % — PAS un WACC`);
   console.log(`plafond d'ecritures : ${PLAFOND === 0 ? "AUCUN (controle desactive)" : PLAFOND} — origine : ${PLAFOND_ORIGINE}`);
 
   phase("univers");
   const soc = {};
-  for (const l of (await d1("SELECT ticker, vaneck, vaneck_sorti_le, devise, pays_siege "
+  for (const l of (await d1("SELECT ticker, vaneck, vaneck_sorti_le, devise, pays_siege, secteur "
                           + "FROM societe"))[0].results)
     soc[l.ticker] = l;
 
@@ -237,6 +249,16 @@ async function main() {
     // EXCLUSION : la typologie du noyau decide, pas un seuil local.
     // Un ROIC eleve n'exclut jamais — c'est la signature d'un modele
     // asset-light, et v1 ecartait ainsi Apple, Nvidia et Mastercard.
+    const activite = String((soc[ticker] || {}).secteur || "");
+    if (!["financier", "float", "incoherent"].includes(P.type)
+        && ACTIVITE_FINANCIERE.test(activite) && !ACTIVITE_EPARGNEE.test(activite)) {
+      P.type = "financier";
+      P.evaOK = false;
+      P.ko = `activité déclarée « ${activite.slice(0, 50)} » : un assureur ou une banque `
+           + `porte des provisions ou des dépôts, pas de la dette — le test de bilan `
+           + `ne le voit pas, et son ROIC mesure le rendement de ses placements`;
+      compte("financier_par_activite");
+    }
     const excl = ["financier", "float", "incoherent"].includes(P.type)
       ? `${P.type} — ${String(P.ko || "").slice(0, 150)}` : null;
     if (excl) compte("exclues_" + P.type);
