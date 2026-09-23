@@ -41,18 +41,40 @@ PLAFOND_NOMS = int(os.environ.get("PLAFOND_NOMS", "5"))
 # WACC et interdit de fusionner avec N. Volontairement plus
 # exigeant que le preset `strict` du screener : on ne signale pas ce qu'on
 # consulte, on signale ce qui merite qu'on s'arrete.
-CANDIDATE = """
+QUALITE = """
     m.exclusion IS NULL
     AND m.profil_type IN ('industriel', 'capitalistique', 'asset_light')
-    AND m.roic_median >= 15 AND m.spread_median > 0
-    AND m.ca_cagr > 0 AND m.fcf_cagr > 0
-    AND m.epv_sur_cours >= 0.60
-    AND (s.suivi_serveur IS NULL OR s.suivi_serveur = 0)
-    AND m.croissance_implicite IS NOT NULL
-    AND m.croissance_demontree >= 4
-    AND m.croissance_implicite <= 0.8 * m.croissance_demontree
+    AND (m.roic_median >= 15 OR (m.roic_organique >= 20 AND m.roic_median >= 9))
+    AND m.spread_median > 0 AND m.ca_cagr > 0 AND m.fcf_cagr > 0
     AND m.n_ex_roic_sup_seuil >= m.n_ex_total - 1
+    AND (s.suivi_serveur IS NULL OR s.suivi_serveur = 0)
+    AND m.croissance_implicite IS NOT NULL AND m.croissance_demontree IS NOT NULL
 """
+# ACQUEREURS : le ROIC organique au-dessus de 20 % repeche Broadcom, TransDigm
+# ou Schneider, mais le comptable doit rester au-dessus du seuil de 9 % — le
+# cadre n'admet jamais l'organique SEUL : le prix paye reste depense.
+
+# DEUX VOIES, parce que deux profils de cherte n'ont rien en commun.
+# VOIE VALEUR : les profits actuels couvrent l'essentiel du prix.
+VOIE_VALEUR = """
+    (m.epv_sur_cours >= 0.60 AND m.croissance_demontree >= 4
+     AND m.croissance_implicite <= 0.8 * m.croissance_demontree)
+"""
+# VOIE CROISSANCE : le seuil d'EPV a 60 % ecartait STRUCTURELLEMENT les
+# compounders — 97 societes de qualite, dont Arista, Advantest ou Paycom, dont
+# le prix exige moins de 60 % de la croissance deja realisee. Le cadre mesure
+# la cherte d'un compounder par ce que suppose son prix, pas par sa valeur a
+# croissance nulle. En contrepartie, la marge exigee est plus forte (60 % au
+# lieu de 80 %), la croissance realisee d'au moins 8 % — le plus bas du 5 ans
+# et de la fenetre longue —, et ni cyclique ni tresorerie envahissante.
+VOIE_CROISSANCE = """
+    (m.croissance_demontree >= 8
+     AND m.croissance_implicite <= 0.6 * m.croissance_demontree
+     AND COALESCE(m.part_tresorerie, 0) < 0.4
+     AND (m.drapeaux IS NULL OR m.drapeaux NOT LIKE '%cyclique%'))
+"""
+CANDIDATE = QUALITE + " AND (" + VOIE_VALEUR + " OR " + VOIE_CROISSANCE + ")"
+
 # PERSISTANCE DU ROIC — l'approximation la plus fidele du filtre dur du cadre
 # (« ROIC > WACC sans decrochage »), bien plus discriminante que le score de
 # moat proxy, que trois societes de qualite sur quatre saturent. Un seul
@@ -182,10 +204,12 @@ def ligne(c):
     if (c.get("part_tresorerie") or 0) >= 0.4:
         dr += f" 💰 trésorerie {round(100 * c['part_tresorerie'])} % du prix"
     act = activite(c.get("secteur"))
+    voie = ("💎 voie croissance" if (c.get("epv_sur_cours") or 0) < 0.6
+            else "💰 voie valeur")
     # Le NOM d'abord, en gras : c'est ce qu'on lit. Le ticker suit, discret —
     # il sert a interroger l'outil, pas a reconnaitre la societe.
     t = (f"**{str(c.get('nom') or '')[:40]}**  `{c['ticker']}`\n"
-         + (f"{act}\n" if act else "")
+         + (f"{act} · {voie}\n" if act else f"{voie}\n")
          # Formulation directe plutot que le sigle : « EPV/cours 60 % » ne dit
          # rien tant qu'on n'a pas la definition en tete.
          + f"Profits actuels : **{round(100 * c['epv_sur_cours'])} % du cours**"
@@ -257,7 +281,7 @@ def main():
     a = ap.parse_args()
 
     s = sonde("incr10_discord")
-    print(f"incr10_discord v7 — Run {RUN_TS}")
+    print(f"incr10_discord v8 — Run {RUN_TS}")
 
     # Auto-migration : plus aucun ALTER TABLE a passer a la main.
     d1("CREATE TABLE IF NOT EXISTS notifications (ticker TEXT PRIMARY KEY, "
@@ -272,7 +296,7 @@ def main():
               "m.epv_sur_cours, m.roic_median, m.n_ex_total, m.score_moat, "
               "m.score_moat_max, m.drapeaux, m.eva_sur_cours, m.part_tresorerie, "
               "m.croissance_implicite, m.croissance_demontree, m.cours, m.concordance, "
-              "m.n_ex_roic_sup_seuil")
+              "m.n_ex_roic_sup_seuil, m.roic_organique")
     ordre = ("ORDER BY (COALESCE(m.concordance, m.epv_sur_cours) > 1.0) ASC, "
              "COALESCE(m.concordance, m.epv_sur_cours) DESC")
     candidates = d1(f"SELECT {champs} {base} {ordre}")[0]["results"]

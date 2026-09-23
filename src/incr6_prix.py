@@ -391,10 +391,11 @@ def main():
               f"{_b.count(chr(10).encode()) + 1} lignes")
     except OSError:
         print("empreinte indisponible")
-    print(f"incr6_prix v13 — Run {RUN_TS}"
+    print(f"incr6_prix v14 — Run {RUN_TS}"
           + (f" — tranche {a.tranche}/{a.nb_tranches}" if a.tranche else ""))
 
-    migrer("metriques", {"eva_sur_cours": "REAL", "concordance": "REAL",
+    migrer("metriques", {"ca_cagr5": "REAL", "fcf_cagr5": "REAL",
+                         "roic_organique": "REAL", "eva_sur_cours": "REAL", "concordance": "REAL",
                          "part_tresorerie": "REAL", "croissance_implicite": "REAL",
                          "croissance_demontree": "REAL", "taux_obstacle": "REAL"})
 
@@ -410,8 +411,12 @@ def main():
 
     # ---- cibles -------------------------------------------------------------
     lignes_cibles = d1(
-        "SELECT ticker, eva_capitaux, ca_cagr, fcf_cagr FROM metriques WHERE exclusion IS NULL "
-        "AND roic_median >= ? ORDER BY roic_median DESC", [ROIC_MIN]
+        "SELECT ticker, eva_capitaux, ca_cagr, fcf_cagr, ca_cagr5, fcf_cagr5 "
+        "FROM metriques WHERE exclusion IS NULL "
+        # Les acquereurs dont le ROIC organique depasse 20 % recoivent aussi un
+        # cours : sans lui, le filtre organique ne servirait a rien en aval.
+        "AND (roic_median >= ? OR roic_organique >= 20) "
+        "ORDER BY roic_median DESC", [ROIC_MIN]
     )[0]["results"]
     # L'EVA est calculee a l'etage metriques ; elle voyage avec la cible
     # plutot que d'imposer une seconde lecture de la table.
@@ -425,7 +430,10 @@ def main():
     # celui du FCF, comme l'exige le cadre — jamais le plus flatteur.
     DEMONTRE = {}
     for l in lignes_cibles:
-        v = [x for x in (l.get("ca_cagr"), l.get("fcf_cagr")) if x is not None]
+        # Le cadre : CAGR 5 ans ET fenetre longue, RETENIR LE PLUS BAS — du
+        # chiffre d'affaires comme du FCF.
+        v = [x for x in (l.get("ca_cagr"), l.get("fcf_cagr"),
+                         l.get("ca_cagr5"), l.get("fcf_cagr5")) if x is not None]
         DEMONTRE[l["ticker"]] = min(v) if v else None
     cibles = [l["ticker"] for l in lignes_cibles]
     print(f"\n{len(cibles)} societes pre-qualifiees (ROIC median >= {ROIC_MIN} %)")

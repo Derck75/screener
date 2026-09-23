@@ -38,6 +38,15 @@ const PLAFOND_ORIGINE = (PLAFOND_BRUT === undefined || PLAFOND_BRUT === "")
 const RUN_TS = new Date().toISOString().slice(0, 19) + "Z";
 const CANARI = ["AAPL", "MSFT", "V", "MA", "NVDA"];
 
+// CYCLIQUES PAR ACTIVITE. Le detecteur de dispersion ne voit pas une
+// cyclique sur cinq exercices : Norsk Hydro, dont le resultat suit l'aluminium,
+// passait par la voie croissance. Liste LIMITEE aux producteurs de matieres
+// premieres et aux biens durables les plus sensibles au cycle. Laisses de cote
+// volontairement : semi-conducteurs, materiaux de construction, chimie de
+// specialite — ils auraient ecarte ASM International ou Sika, compounders au
+// cycle reel mais a la tendance seculaire. Teste sur 26 libelles reels.
+const CYCLIQUE_ACTIVITE = /alumin|steel|sidérurgie|\bmines?\b|mining|copper|cuivre|\bgold\b|mines d.or|silver|mines d.argent|charbon|\bcoal\b|uranium|crude petroleum|oil & gas (e&p|integrated|drilling|refining)|pétrole intégré|exploration pétrolière|raffinage|forage pétrolier|residential construction|construction résidentielle|operative builders|auto manufacturers|^automobile$|motor vehicles & passenger car|marine shipping|transport maritime|deep sea foreign|paper & paper|^papier$|lumber|^bois$|agricultural inputs|intrants agricoles|fertilizer|recreational vehicles|véhicules de loisirs|motor homes/i;
+
 // Index « exercice:chiffre d'affaires » -> tickers, pour la detection des
 // doubles consolidations.
 const INDEX_CA = {};
@@ -150,7 +159,7 @@ const COLONNES = ["roic_median", "roic_dernier", "spread_median", "n_ex_roic_sup
   "ca_hausse_n", "ca_hausse_m", "fcf_positif_n", "fcf_positif_m", "mb_mediane",
   "conversion_fcf_rn", "actions_var_5a", "dette_sur_ca", "cp_sur_ca", "score_moat",
   "score_moat_max", "biais_acquereur", "ebit_dispersion", "drapeaux",
-  "eva_capitaux", "eva_statut", "eva_h",
+  "eva_capitaux", "eva_statut", "eva_h", "ca_cagr5", "fcf_cagr5", "roic_organique",
   "n_non_calculable", "exclusion", "maj"];
 
 /* EMPREINTE — met fin au debat « quel fichier tourne ? ».
@@ -169,14 +178,15 @@ function empreinte() {
 }
 
 async function main() {
-  console.log(`incr5_metriques v13 (noyau partage) — Run ${RUN_TS}`);
+  console.log(`incr5_metriques v14 (noyau partage) — Run ${RUN_TS}`);
   console.log(`empreinte ${empreinte()}`);
   console.log(`seuil de rentabilite forfaitaire : ${SEUIL} % — PAS un WACC`);
   console.log(`plafond d'ecritures : ${PLAFOND === 0 ? "AUCUN (controle desactive)" : PLAFOND} — origine : ${PLAFOND_ORIGINE}`);
 
   phase("univers");
   await migrer("metriques", { ebit_dispersion: "REAL", drapeaux: "TEXT",
-    eva_capitaux: "REAL", eva_statut: "TEXT", eva_h: "INTEGER" });
+    eva_capitaux: "REAL", eva_statut: "TEXT", eva_h: "INTEGER",
+    ca_cagr5: "REAL", fcf_cagr5: "REAL", roic_organique: "REAL" });
   await migrer("societe", { secteur: "TEXT" });
   const soc = {};
   for (const l of (await d1("SELECT ticker, vaneck, vaneck_sorti_le, devise, pays_siege, secteur "
@@ -208,6 +218,18 @@ async function main() {
     }
     for (const [an, v] of Object.entries(series.revenue || {}))
       if (v > 1e7) (INDEX_CA[an + ":" + v] ||= []).push(ticker);
+
+    // EBIT RECONSTITUE. 444 societes etaient exclues comme « flottantes »
+    // alors que leur capital est positif : elles ne publient pas de sous-total
+    // de resultat d'exploitation — Eli Lilly, Zoetis, ADP — et sans EBIT le
+    // noyau ne calcule aucun ROIC. Le resultat avant impot prend le relais.
+    // Choix PRUDENT : pour une societe endettee il est un peu inferieur a
+    // l'EBIT, qu'on sous-estime donc au lieu de l'inventer.
+    for (const [an, pt] of Object.entries(series.pretax || {}))
+      if (series.ebit?.[an] == null && Number.isFinite(pt)) {
+        (series.ebit ||= {})[an] = pt;
+        compte("ebit_reconstitue_exercices");
+      }
     let der, R, P, epv;
     try {
       // DEVISE REELLE, jamais "USD" en dur. Sans effet sur les ratios — ROIC,
@@ -219,6 +241,30 @@ async function main() {
       epv = ancrageEPV(der, null);
     } catch (e) { erreur("noyau", `${ticker} ${e.message}`); continue; }
 
+    // FENETRE TRONQUEE. En passant a douze exercices, la fenetre a traverse
+    // l'adoption de la norme ASC 606 en 2018 : les series « incoherentes »
+    // sont passees de 424 a 670, et des compounders comme Philip Morris ou
+    // Yum! ont ete exclus pour un changement de PERIMETRE comptable. Si les
+    // six derniers exercices sont homogenes, ils sont retenus — la fenetre
+    // courte est alors signalee par le nombre d'exercices, jamais masquee.
+    if (P.type === "incoherent") {
+      const annees = Object.keys(series.revenue || {}).map(Number).sort((a, b) => a - b);
+      const garder = new Set(annees.slice(-6).map(String));
+      if (garder.size >= 5) {
+        const s6 = {};
+        for (const [k, parAn] of Object.entries(series))
+          s6[k] = Object.fromEntries(Object.entries(parAn).filter(([a]) => garder.has(String(a))));
+        try {
+          const d2 = derives(s6, (soc[ticker] || {}).devise || "USD");
+          const P2 = profilSociete(d2, {});
+          if (!["incoherent", "float", "financier"].includes(P2.type)) {
+            der = d2; P = P2; R = roicRetenu(d2); epv = ancrageEPV(d2, null);
+            compte("fenetre_tronquee");
+          }
+        } catch (e) { /* la societe reste exclue, motif d'origine */ }
+      }
+    }
+
     const ans = der.annees || [];
     const der1 = ans.length ? der.lignes[ans[ans.length - 1]] : null;
     const roicMed = Number.isFinite(R.mediane) ? R.mediane * 100 : null;
@@ -227,9 +273,27 @@ async function main() {
     const nSup = serie.filter(x => x >= SEUIL).length;
 
     const srz = c => ans.map(a => der.lignes[a]?.[c]).filter(Number.isFinite);
-    const cg = c => { const v = srz(c);
-      return (v.length >= 3 && v[0] > 0 && v[v.length - 1] > 0)
-        ? 100 * (Math.pow(v[v.length - 1] / v[0], 1 / (v.length - 1)) - 1) : null; };
+    // CAGR LISSES : moyenne des deux premiers et des deux derniers exercices
+    // des cinq points. Un CAGR d'un point a l'autre laissait une annee
+    // exceptionnelle decider seule — le depot fiscal de Coca-Cola en 2024,
+    // la base minuscule de Zoom en 2014.
+    const cagrV = v => {
+      if (v.length < 3) return null;
+      const [d, f, n] = v.length >= 5
+        ? [(v[0] + v[1]) / 2, (v[v.length - 2] + v[v.length - 1]) / 2, v.length - 2]
+        : [v[0], v[v.length - 1], v.length - 1];
+      return (d > 0 && f > 0) ? 100 * (Math.pow(f / d, 1 / n) - 1) : null;
+    };
+    const cg = c => cagrV(srz(c));
+    // CAGR 5 ANS, a part : le cadre impose de citer le 5 ans et la fenetre
+    // longue, et de RETENIR LE PLUS BAS. Hors des Etats-Unis, la fenetre
+    // longue EST de cinq ans : pas de second calcul.
+    const cg5 = c => { const v = srz(c); return v.length >= 7 ? cagrV(v.slice(-6)) : null; };
+    // ROIC ORGANIQUE, hors goodwill acquis. Le cadre le lit avec le comptable :
+    // l'un juge l'allocation, l'autre la qualite operationnelle. Broadcom,
+    // Roper, TransDigm, Schneider sortaient sous 15 % en comptable seulement.
+    const orgS = srz("roicOrg");
+    const roicOrgMed = orgS.length >= 3 ? mediane(orgS) * 100 : null;
     const caS = srz("ca"), fcfS = srz("fcf");
 
     // ═══ COUCHE D'HYGIENE — drapeaux sur les CHAMPS, jamais d'exclusion ═══
@@ -273,6 +337,11 @@ async function main() {
       }
       if (drapeaux.includes("split")) break;
     }
+
+    // 1 bis. CYCLIQUE PAR ACTIVITE — voir CYCLIQUE_ACTIVITE.
+    if (!drapeaux.includes("cyclique")
+        && CYCLIQUE_ACTIVITE.test(String((soc[ticker] || {}).secteur || "")))
+      drapeaux.push("cyclique");
 
     // 2 bis. FLUX ATYPIQUES. Un FCF median superieur a deux fois et demie le
     //    resultat net ne decrit plus l'activite : fonds de clients en transit
@@ -375,6 +444,7 @@ async function main() {
       contre_preuve_ecart: R.contreExp?.ecart ?? R.contreAutre?.ecart ?? null,
       profil_type: P.type, profil_ko: P.ko ? String(P.ko).slice(0, 200) : null,
       ca_cagr: cg("ca"), fcf_cagr: cg("fcf"), ebit_cagr: cg("ebit"),
+      ca_cagr5: cg5("ca"), fcf_cagr5: cg5("fcf"), roic_organique: roicOrgMed,
       ca_hausse_n: caS.filter((v, i) => i > 0 && v > caS[i - 1]).length,
       ca_hausse_m: Math.max(0, caS.length - 1),
       fcf_positif_n: fcfS.filter(v => v > 0).length, fcf_positif_m: fcfS.length,
