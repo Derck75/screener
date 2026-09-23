@@ -281,13 +281,20 @@ def main():
     a = ap.parse_args()
 
     s = sonde("incr10_discord")
-    print(f"incr10_discord v8 — Run {RUN_TS}")
+    print(f"incr10_discord v9 — Run {RUN_TS}")
 
     # Auto-migration : plus aucun ALTER TABLE a passer a la main.
     d1("CREATE TABLE IF NOT EXISTS notifications (ticker TEXT PRIMARY KEY, "
        "premiere TEXT, derniere TEXT, epv REAL, canal TEXT, motif TEXT)")
     migrer("notifications", {"cours_signale": "REAL"})
     migrer("societe", {"suivi_serveur": "INTEGER", "statut_serveur": "TEXT"})
+    # Colonnes lues par les filtres mais creees par d'autres etapes : lancer
+    # l'amorcage AVANT l'etage metriques faisait echouer le script sur
+    # « no such column ». Chaque lecteur cree desormais ce qu'il lit.
+    migrer("metriques", {"roic_organique": "REAL", "ca_cagr5": "REAL",
+                         "fcf_cagr5": "REAL", "part_tresorerie": "REAL",
+                         "croissance_implicite": "REAL", "croissance_demontree": "REAL",
+                         "concordance": "REAL", "eva_sur_cours": "REAL"})
 
     s.phase("lecture")
     base = ("FROM metriques m JOIN societe s ON s.ticker = m.ticker "
