@@ -1,5 +1,9 @@
 name: H univers international
 on:
+  # Une fois par mois, en ecriture : sans cela l'univers international etait
+  # fige a sa premiere ecriture — les nouvelles cotations n'y entraient jamais.
+  schedule:
+    - cron: '41 3 2 * *'
   workflow_dispatch:
     inputs:
       ecrire:
@@ -12,6 +16,10 @@ on:
         description: 'Capitalisation minimale EN EUROS'
         required: false
         default: '300000000'
+
+concurrency:
+  group: screener-intl
+  cancel-in-progress: false
 
 jobs:
   univers:
@@ -31,5 +39,5 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: >
           python src/univers_intl.py --d1
-          ${{ inputs.ecrire == 'oui' && '--ecrire' || '' }}
+          ${{ (github.event_name == 'schedule' || inputs.ecrire == 'oui') && '--ecrire' || '' }}
           --cap-min ${{ inputs.cap_min || 300000000 }}
