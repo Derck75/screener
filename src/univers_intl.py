@@ -213,7 +213,9 @@ def extraire(html):
             continue
         lignes.append({
             "sym": sym.upper(),
-            "nom": cells[i_nom],
+            # Entites HTML decodees a la source : « VIEL &amp; Cie » arrivait
+            # tel quel en base et dans les messages Discord.
+            "nom": _html.unescape(cells[i_nom]),
             "cap": cap_en_nombre(cells[i_cap]) if (i_cap is not None and i_cap < len(cells)) else None,
         })
     return lignes, f"colonnes {i_sym}/{i_nom}/{i_cap}"

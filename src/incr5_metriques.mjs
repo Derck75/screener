@@ -38,6 +38,10 @@ const PLAFOND_ORIGINE = (PLAFOND_BRUT === undefined || PLAFOND_BRUT === "")
 const RUN_TS = new Date().toISOString().slice(0, 19) + "Z";
 const CANARI = ["AAPL", "MSFT", "V", "MA", "NVDA"];
 
+// Index « exercice:chiffre d'affaires » -> tickers, pour la detection des
+// doubles consolidations.
+const INDEX_CA = {};
+
 // FINANCIERES PAR ACTIVITE DECLAREE. Le test de bilan du noyau cherche un
 // profil bancaire ou foncier — dette rapportee au chiffre d'affaires. Un
 // assureur n'en a pas : il porte des PROVISIONS TECHNIQUES, pas de la dette,
@@ -47,8 +51,21 @@ const CANARI = ["AAPL", "MSFT", "V", "MA", "NVDA"];
 // Les COURTIERS et agents sont epargnes : Marsh, Aon, Brown & Brown portent
 // « insurance » dans leur libelle SEC mais n'ont aucun bilan de risque, et
 // leur ROIC est reel.
-const ACTIVITE_FINANCIERE = /insurance|assurance|\bbank|banque|savings institution|mortgage bankers/i;
-const ACTIVITE_EPARGNEE = /broker|agent|courtage/i;
+// MAISONS DE TITRES ET MARCHES DE CAPITAUX ajoutes : Viel & Cie, holding
+// d'un courtier interbancaire, passait parmi les candidates PEA. Leur bilan
+// est un portefeuille de negociation, pas un capital d'exploitation.
+// Deux pieges de nomenclature, testes :
+//  - les BOURSES sont classees par la SEC sous « Security & Commodity
+//    Brokers, Dealers, Exchanges » : seul le libelle exact des maisons de
+//    titres (« ... & Flotation ») est vise, ICE, CME et Deutsche Borse restent ;
+//  - l'exception ne protege plus que les courtiers D'ASSURANCE. Formulee sur
+//    « broker », elle aurait aussi protege les maisons de titres.
+// Rubrique SEC « Security Brokers, Dealers & Flotation » RETIREE apres mesure
+// sur la base : elle aurait exclu SEI Investments et WisdomTree, gestionnaires
+// d'actifs sans portefeuille de negociation, au ROIC reel. Les maisons de
+// titres pures sont de toute facon ecartees par le test de bilan du noyau.
+const ACTIVITE_FINANCIERE = /insurance|assurance|\bbank|banque|savings institution|mortgage bankers|capital markets|marchés de capitaux|investment banking/i;
+const ACTIVITE_EPARGNEE = /insurance agents|insurance broker|courtage d'assurance/i;
 
 // Duree de fade de la brique EVA, deduite du score de moat PROXY. Le cadre
 // reserve vingt ans a un verdict Wide d'analyste ; un proxy ne l'autorise
@@ -82,6 +99,18 @@ async function d1(sql, params = []) {
     await fatal("erreur D1 (message brut) : " + err);
   }
   return j.result;
+}
+
+// AUTO-MIGRATION : chaque script cree lui-meme les colonnes qu'il ecrit.
+// Deux incidents sont venus d'un ALTER TABLE oublie dans la console.
+async function migrer(table, colonnes) {
+  const presentes = new Set((await d1(`PRAGMA table_info(${table})`))[0]
+    .results.map(l => l.name));
+  for (const [nom, typ] of Object.entries(colonnes))
+    if (!presentes.has(nom)) {
+      await d1(`ALTER TABLE ${table} ADD COLUMN ${nom} ${typ}`);
+      console.log(`  migration ${table} : ${nom} ajoutee`);
+    }
 }
 
 async function journal(statut, lignes, canari, message) {
@@ -140,12 +169,15 @@ function empreinte() {
 }
 
 async function main() {
-  console.log(`incr5_metriques v10 (noyau partage) — Run ${RUN_TS}`);
+  console.log(`incr5_metriques v13 (noyau partage) — Run ${RUN_TS}`);
   console.log(`empreinte ${empreinte()}`);
   console.log(`seuil de rentabilite forfaitaire : ${SEUIL} % — PAS un WACC`);
   console.log(`plafond d'ecritures : ${PLAFOND === 0 ? "AUCUN (controle desactive)" : PLAFOND} — origine : ${PLAFOND_ORIGINE}`);
 
   phase("univers");
+  await migrer("metriques", { ebit_dispersion: "REAL", drapeaux: "TEXT",
+    eva_capitaux: "REAL", eva_statut: "TEXT", eva_h: "INTEGER" });
+  await migrer("societe", { secteur: "TEXT" });
   const soc = {};
   for (const l of (await d1("SELECT ticker, vaneck, vaneck_sorti_le, devise, pays_siege, secteur "
                           + "FROM societe"))[0].results)
@@ -174,6 +206,8 @@ async function main() {
         (series[k] ||= {})[l.exercice] = Number(v);
       }
     }
+    for (const [an, v] of Object.entries(series.revenue || {}))
+      if (v > 1e7) (INDEX_CA[an + ":" + v] ||= []).push(ticker);
     let der, R, P, epv;
     try {
       // DEVISE REELLE, jamais "USD" en dur. Sans effet sur les ratios — ROIC,
@@ -239,6 +273,18 @@ async function main() {
       }
       if (drapeaux.includes("split")) break;
     }
+
+    // 2 bis. FLUX ATYPIQUES. Un FCF median superieur a deux fois et demie le
+    //    resultat net ne decrit plus l'activite : fonds de clients en transit
+    //    (Euronet, prestataires de paiement), ou amortissements d'acquisitions
+    //    massifs (Broadcom). Dans les deux cas, les mesures fondees sur le FCF
+    //    et celles fondees sur le resultat divergent, et le lecteur doit le
+    //    savoir avant de lire l'une ou l'autre. Mediane sur les exercices a
+    //    resultat positif : un exercice de BFR libere ne suffit pas.
+    const conv = ans.map(a => der.lignes[a])
+      .filter(l => l && Number.isFinite(l.convFCF) && l.rn > 0)
+      .map(l => l.convFCF);
+    if (conv.length >= 3 && mediane(conv) > 2.5) drapeaux.push("flux_atypique");
 
     // 3. MARGE BRUTE HORS BORNES. Une marge hors [0 %, 100 %] est
     //    arithmetiquement impossible : le champ est faux, pas la societe.
@@ -340,8 +386,6 @@ async function main() {
       eva_capitaux: evaCap, eva_statut: evaStatut, eva_h: evaH,
       // `assets` n'existe pas dans les lignes derivees : il reste dans les
       // series brutes. Meme piege que `shares` ci-dessus.
-      _ca_der: der1?.ca ?? null, _ebit_der: der1?.ebit ?? null,
-      _assets_der: (ans.length ? series.assets?.[ans[ans.length - 1]] : null) ?? null,
       score_moat: pts, score_moat_max: mx, biais_acquereur: biais,
       n_non_calculable: [roicMed, cg("ca"), cg("fcf"), mbMed].filter(x => x == null).length,
       exclusion: excl, maj: RUN_TS,
@@ -361,44 +405,36 @@ async function main() {
   // d'autre — et regroupait 2,7 societes par tranche en moyenne, donc des
   // faux positifs en masse. Trier puis comparer au voisin immediat supprime
   // les deux defauts et reste lineaire.
-  const parDevise = {};
-  for (const [t, v] of Object.entries(rangs)) {
-    if (!(v._ca_der > 0)) continue;
-    const dev = (soc[t] || {}).devise || "?";
-    (parDevise[dev] ||= []).push([t, v._ca_der, v._assets_der, v._ebit_der]);
+  // SIGNATURE MESUREE SUR LA BASE, pas supposee. Une double consolidation
+  // publie un chiffre d'affaires IDENTIQUE au million pres, sur PLUSIEURS
+  // exercices : LVMH et Dior sur cinq, Plains, Empire State Realty et
+  // NL Industries-CompX sur douze. Sur un seul exercice, la base ne contient
+  // que des coincidences — Airbnb et M&T Bank, Aptiv et Forvia, des centaines,
+  // souvent entre devises differentes. Les versions precedentes comparaient
+  // le resultat d'exploitation a 2 % : celui de Dior est inferieur de 3,4 % a
+  // celui de LVMH, et la paire passait a travers.
+  const coOccurrences = {};
+  for (const groupe of Object.values(INDEX_CA)) {
+    if (groupe.length < 2 || groupe.length > 6) continue;   // valeur degeneree
+    for (let i = 0; i < groupe.length; i++)
+      for (let k = i + 1; k < groupe.length; k++) {
+        const cle = [groupe[i], groupe[k]].sort().join("|");
+        coOccurrences[cle] = (coOccurrences[cle] || 0) + 1;
+      }
   }
-  // TROIS CRITERES, CALIBRES PAR SIMULATION sur 3 500 societes sans lien.
-  // CA seul a 0,2 % et bilan a 5 % : ~149 lignes fortuites, 129 observees.
-  // CA a 0,01 % et bilan a 2 % : ~2,5 paires fortuites, 2 observees — mais
-  // LVMH-Dior passait a travers, leur chiffre d'affaires differant de plus de
-  // 0,01 %. Le RESULTAT D'EXPLOITATION est le critere que partagent les
-  // consolidations et que le hasard ne reproduit pas : avec lui, le CA peut
-  // tolerer 1 % et les coincidences tombent sous une paire.
-  // Balayage de FENETRE, pas de voisin : a 1 % de tolerance, une troisieme
-  // societe peut s'intercaler entre les deux membres d'une paire.
   let nDoublons = 0;
   const marquer = (a, b) => {
+    if (!rangs[a]) return;
     const d = rangs[a].drapeaux;
     if (String(d || "").includes("doublon")) return;
     rangs[a].drapeaux = (d ? d + "," : "") + "doublon:" + b;
     nDoublons++;
   };
-  for (const liste of Object.values(parDevise)) {
-    liste.sort((a, b) => a[1] - b[1]);
-    for (let i = 0; i < liste.length; i++) {
-      const [t1, c1, a1, e1] = liste[i];
-      if (!(a1 > 0) || !Number.isFinite(e1) || e1 === 0) continue;
-      for (let k = i + 1; k < liste.length; k++) {
-        const [t2, c2, a2, e2] = liste[k];
-        if ((c2 - c1) / c1 > 0.01) break;          // hors fenetre, on arrete
-        if (!(a2 > 0) || Math.abs(a2 - a1) / a1 > 0.03) continue;
-        if (!Number.isFinite(e2) || Math.abs(e2 - e1) / Math.abs(e1) > 0.02) continue;
-        // Les deux lignes sont marquees, aucune n'est ecartee : le screener
-        // ne sait pas laquelle est la holding, l'analyse tranche.
-        marquer(t1, t2);
-        marquer(t2, t1);
-      }
-    }
+  for (const [cle, n] of Object.entries(coOccurrences)) {
+    if (n < 2) continue;
+    const [a, b] = cle.split("|");
+    marquer(a, b);
+    marquer(b, a);
   }
   compte("doublons", nDoublons);
   console.log(`  ${nDoublons} lignes en double consolidation presumee`);
@@ -412,7 +448,6 @@ async function main() {
   }
 
   phase("differentiel");
-  for (const v of Object.values(rangs)) { delete v._ca_der; delete v._assets_der; delete v._ebit_der; }
   const cols = COLONNES.filter(c => c !== "maj");
   const existant = {};
   for (let p = 0; ; p++) {

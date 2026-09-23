@@ -147,6 +147,17 @@ def d1(sql, params=None):
     return j["result"]
 
 
+def migrer(table, colonnes):
+    """Cree les colonnes manquantes : deux incidents sont venus d'un ALTER
+    TABLE oublie. PRAGMA table_info est deja eprouve par l'increment 4."""
+    presentes = {l["name"] for l in
+                 d1(f"PRAGMA table_info({table})")[0]["results"]}
+    for nom, typ in colonnes.items():
+        if nom not in presentes:
+            d1(f"ALTER TABLE {table} ADD COLUMN {nom} {typ}")
+            print(f"  migration {table} : {nom} ajoutee")
+
+
 def journal(statut, etape, n, canari, message, detail=None):
     d1("INSERT INTO runs (debut, fin, etape, statut, lignes_ecrites, canari, message, detail)"
        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -380,8 +391,12 @@ def main():
               f"{_b.count(chr(10).encode()) + 1} lignes")
     except OSError:
         print("empreinte indisponible")
-    print(f"incr6_prix v12 — Run {RUN_TS}"
+    print(f"incr6_prix v13 — Run {RUN_TS}"
           + (f" — tranche {a.tranche}/{a.nb_tranches}" if a.tranche else ""))
+
+    migrer("metriques", {"eva_sur_cours": "REAL", "concordance": "REAL",
+                         "part_tresorerie": "REAL", "croissance_implicite": "REAL",
+                         "croissance_demontree": "REAL", "taux_obstacle": "REAL"})
 
     # ---- diagnostic demande : pourquoi la moitie de l'univers est ecartee ----
     print("\nventilation des exclusions mecaniques :")
@@ -401,6 +416,11 @@ def main():
     # L'EVA est calculee a l'etage metriques ; elle voyage avec la cible
     # plutot que d'imposer une seconde lecture de la table.
     EVA = {l["ticker"]: l.get("eva_capitaux") for l in lignes_cibles}
+    # TAUX-OBSTACLE PAR ENVELOPPE (cadre, seuil N) : 10 % en PEA, 11,5 % en
+    # CTO. Un taux unique jugeait les candidates hors PEA trop favorablement —
+    # l'ecart de 1,5 point est celui de la fiscalite.
+    PEA = {l["ticker"] for l in
+           d1("SELECT ticker FROM societe WHERE eligible_pea = 1")[0]["results"]}
     # Croissance DEMONTREE : le plus bas du CAGR du chiffre d'affaires et de
     # celui du FCF, comme l'exige le cadre — jamais le plus flatteur.
     DEMONTRE = {}
@@ -468,11 +488,13 @@ def main():
     maj, refus_epv, echecs = [], 0, 0
     cours_canari = (table.get(CANARI_TICKER) or (None,))[0]
 
+    perimes = []
     for t in cibles:
         px = table.get(t.upper())
         if not px or not px[0]:
             echecs += 1
             s.erreur("sans_cours", t)
+            perimes.append(t)
             continue
         cours, capi_liste = px
         annees = comptes.get(t) or {}
@@ -534,13 +556,14 @@ def main():
                 if annees[a].get("cfo") is not None
                 and annees[a].get("capex") is not None]
         g_imp = None
+        r_obst = 0.10 if t in PEA else 0.115
         if len(fcfs) >= 2 and capi:
             fcf_med = st.median(fcfs)
             if fcf_med > 0:
                 y = fcf_med / capi
                 # Prix = FCF x (1+g) / (r - g), resolu en g, au taux-obstacle
-                # PEA de 10 % : la croissance perpetuelle que le cours suppose.
-                g_imp = 100 * (TAUX_OBSTACLE_EPV - y) / (1 + y)
+                # de l'enveloppe : la croissance perpetuelle que le cours exige.
+                g_imp = 100 * (r_obst - y) / (1 + y)
         g_dem = DEMONTRE.get(t)
         # Le rendement FCF AFFICHE suit la meme mediane que le calcul. Trigano
         # affichait 19,7 % sur le dernier exercice pour une croissance
@@ -609,7 +632,8 @@ def main():
         concordance = min(vals_c) if len(vals_c) == 2 else None
 
         maj.append((t, cours, capi, epv, epv_sur_cours, fcf_y, per_cour,
-                    eva_sur_cours, concordance, part_tres, g_imp, g_dem))
+                    eva_sur_cours, concordance, part_tres, g_imp, g_dem,
+                    100 * r_obst))
 
     print(f"  {len(maj)} cotations exploitables, {echecs} echecs")
 
@@ -630,16 +654,34 @@ def main():
 
     # ---- ecriture -----------------------------------------------------------
     ecrites = 0
-    for t, cours, capi, epv, esc, fy, pc, pm, ec, pt, gi, gd in maj:
+    for t, cours, capi, epv, esc, fy, pc, pm, ec, pt, gi, gd, ro in maj:
         d1("UPDATE metriques SET cours = ?, plancher_epv = ?, epv_sur_cours = ?, "
            "fcf_yield = ?, per_courant = ?, eva_sur_cours = ?, concordance = ?, "
            "part_tresorerie = ?, croissance_implicite = ?, "
-           "croissance_demontree = ?, maj = ? WHERE ticker = ?",
-           [cours, epv, esc, fy, pc, pm, ec, pt, gi, gd, RUN_TS, t])
+           "croissance_demontree = ?, taux_obstacle = ?, maj = ? WHERE ticker = ?",
+           [cours, epv, esc, fy, pc, pm, ec, pt, gi, gd, ro, RUN_TS, t])
         d1("UPDATE societe SET capitalisation = ? WHERE ticker = ?", [capi, t])
         ecrites += 1
         if ecrites % 200 == 0 or ecrites == len(maj):
             print(f"  ecrit {ecrites}/{len(maj)}")
+
+    # ---- cours perimes -------------------------------------------------------
+    # Une societe radiee gardait son dernier cours, et avec lui une decote qui
+    # n'existe plus : une candidate fantome. Ses ratios de PRIX sont effaces —
+    # jamais ses comptes ni son pouvoir beneficiaire. Garde : seulement si la
+    # liste de SA place a bien ete lue ce jour-la. Une liste muette pour une
+    # raison technique n'efface rien.
+    places_lues = {("." + k.rsplit(".", 1)[1]) if "." in k else "" for k in table}
+    purges = [t for t in perimes
+              if (("." + t.rsplit(".", 1)[1]) if "." in t else "") in places_lues]
+    for t in purges:
+        d1("UPDATE metriques SET cours = NULL, epv_sur_cours = NULL, "
+           "eva_sur_cours = NULL, concordance = NULL, fcf_yield = NULL, "
+           "per_courant = NULL, part_tresorerie = NULL, "
+           "croissance_implicite = NULL, maj = ? WHERE ticker = ?", [RUN_TS, t])
+    if purges:
+        print(f"  {len(purges)} cours perime(s) efface(s) : {' '.join(purges[:8])}")
+        s.compte("cours_perimes", len(purges))
 
     # ---- rapport ------------------------------------------------------------
     q = lambda s: d1(s)[0]["results"][0]["n"]
@@ -660,18 +702,27 @@ def main():
     print(f"  + plancher EPV >= 60 % du cours                   : "
           f"{q(f'SELECT COUNT(*) AS n FROM metriques WHERE {_b} AND epv_sur_cours >= 0.6')}")
 
-    print("\ndix premiers par pouvoir beneficiaire rapporte au cours :")
+    # Meme ordre que le screener et Discord : le domaine de validite d'abord,
+    # la plus basse des deux mesures ensuite. Trier sur l'EPV seule remettait
+    # en tete les cas ou le calcul sort de son domaine.
+    print("\ndix premiers par concordance, domaine de validite d'abord :")
     for l in d1(
-        "SELECT m.ticker, s.nom, m.roic_median, m.ecart_multiple, m.epv_sur_cours, "
-        "m.score_moat, m.score_moat_max, s.vaneck FROM metriques m "
+        "SELECT m.ticker, s.nom, m.roic_median, m.epv_sur_cours, m.eva_sur_cours, "
+        "m.concordance, m.croissance_implicite, m.croissance_demontree, "
+        "m.score_moat, m.score_moat_max FROM metriques m "
         "JOIN societe s ON s.ticker = m.ticker "
         "WHERE m.exclusion IS NULL AND m.roic_median >= 15 AND m.ca_cagr > 0 "
-        "AND m.fcf_cagr > 0 AND m.epv_sur_cours IS NOT NULL "
-        "ORDER BY m.epv_sur_cours DESC LIMIT 10")[0]["results"]:
-        print(f"  {l['ticker']:7} ROIC {round(l['roic_median'] or 0):3} %  "
-              f"EPV/cours {round(100 * (l['epv_sur_cours'] or 0)):4} %  "
-              f"moat {l['score_moat']}/{l['score_moat_max']}"
-              f"{'  VanEck' if l['vaneck'] else ''}  {(l['nom'] or '')[:28]}")
+        "AND m.fcf_cagr > 0 AND m.concordance IS NOT NULL "
+        "ORDER BY (m.concordance > 1.0) ASC, "
+        "CASE WHEN m.concordance <= 1.0 THEN m.concordance END DESC, "
+        "m.concordance ASC LIMIT 10")[0]["results"]:
+        gi, gd = l.get("croissance_implicite"), l.get("croissance_demontree")
+        cr = (f"exige {gi:+.1f} %/an, fait {gd:+.1f} %"
+              if gi is not None and gd is not None else "croissance n.c.")
+        print(f"  {l['ticker']:9} ROIC {round(l['roic_median'] or 0):3} %  "
+              f"EPV {round(100 * (l['epv_sur_cours'] or 0)):4} %  "
+              f"EVA {round(100 * (l['eva_sur_cours'] or 0)):4} %  "
+              f"{cr}  {(l['nom'] or '')[:24]}")
 
     journal("OK", f"incr6_prix_t{a.tranche}", ecrites, "VERT",
             f"{ecrites} cotations, {refus_epv} refus EPV, {echecs} echecs",

@@ -30,7 +30,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from commun import (d1, journal, sonde, budget, ecrire_differentiel,  # noqa: E402
-                    RUN_TS)
+                    migrer, RUN_TS)
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
@@ -249,7 +249,7 @@ def main():
     a = ap.parse_args()
 
     s = sonde(f"incr8_comptes_intl_t{a.tranche}")
-    print(f"incr8_comptes_intl v6 — Run {RUN_TS}")
+    print(f"incr8_comptes_intl v7 — Run {RUN_TS}")
 
     if a.sonder:
         suf = "." + a.sonder.split(".")[-1] if "." in a.sonder else ""
@@ -310,6 +310,25 @@ def main():
         return
 
     s.phase("cibles")
+    # ROTATION DES COMPTES. Jusqu'ici la file triait par nombre d'exercices
+    # puis par capitalisation : une fois toutes les societes servies, chaque
+    # passage reprenait indefiniment les 80 plus grosses et les 1 600 autres
+    # restaient figees — a la saison des rapports annuels, les candidates PEA
+    # auraient garde leurs comptes de l'annee precedente. Chaque lecture est
+    # desormais datee, et une societe redevient une cible trente jours plus
+    # tard : de quoi capter un nouvel exercice dans le mois de sa publication.
+    if "comptes_maj" in migrer("societe", {"comptes_maj": "TEXT"}):
+        # Premiere mise en service : les comptes deja presents sont dates de
+        # facon ETALEE sur trente jours, pour que leurs relectures ne tombent
+        # pas toutes le meme jour.
+        d1("UPDATE societe SET comptes_maj = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', "
+           "'-' || (abs(random()) % 30) || ' days') WHERE origine LIKE '%intl%' "
+           "AND EXISTS (SELECT 1 FROM comptes2 c WHERE c.ticker = societe.ticker)")
+        print("  comptes existants dates, relectures etalees sur 30 jours")
+    # Noms portant une entite HTML non decodee (« VIEL &amp; Cie ») :
+    # correction idempotente, qui ne touche plus rien une fois faite.
+    d1("UPDATE societe SET nom = REPLACE(nom, '&amp;', '&') WHERE nom LIKE '%&amp;%'")
+
     # `sans_sa` : societes dont la source ne publie aucune page — cotations
     # secondaires pour l'essentiel. Les reinterroger coute trois requetes par
     # tranche sans jamais rien rendre.
@@ -321,11 +340,16 @@ def main():
         params = ["%" + p for p in suf]
     else:
         params = []
+    # Cible = jamais lue, OU lue il y a plus de trente jours. Les jamais lues
+    # d'abord, puis les plus anciennes, puis les plus grosses.
+    W += (" AND (NOT EXISTS (SELECT 1 FROM comptes2 c WHERE c.ticker = s.ticker) "
+          "OR s.comptes_maj IS NULL "
+          "OR s.comptes_maj < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-30 days'))")
     cibles = [l["ticker"] for l in d1(
         f"SELECT s.ticker, "
         f"(SELECT COUNT(*) FROM comptes2 c WHERE c.ticker = s.ticker) AS n "
         f"FROM societe s WHERE {W} "
-        f"ORDER BY n ASC, s.capitalisation DESC",
+        f"ORDER BY (n > 0) ASC, s.comptes_maj ASC, s.capitalisation DESC",
         params)[0]["results"]]
     total_file = len(cibles)
     if a.tranche:
@@ -336,14 +360,14 @@ def main():
         # Mode file : on prend simplement les premieres, c'est-a-dire celles
         # qui n'ont aucun compte.
         cibles = cibles[:a.taille]
-    print(f"  file totale : {total_file} societes restantes")
+    print(f"  file : {total_file} societes dues (jamais lues, ou lues il y a plus de 30 jours)")
     print(f"  {len(cibles)} societes a traiter")
     if not cibles:
         journal("OK", s.etape, 0, "VERT", "aucune cible", s.resume())
         return
 
     s.phase("collecte")
-    rangs, sans_page = {}, []
+    rangs, sans_page, lues = {}, [], []
     for i, t in enumerate(cibles, 1):
         suf = "." + t.split(".")[-1]
         code, sym = PLACE.get(suf), t.split(".")[0].replace("-", ".")
@@ -362,6 +386,7 @@ def main():
             sans_page.append(t)
             continue
         s.compte("societes_lues")
+        lues.append(t)
         for annee in sorted({x for v in total.values() for x in v}):
             ligne = {c: total.get(c, {}).get(annee) for c in COLONNES}
             if ligne["revenue"] is None and ligne["ebit"] is None:
@@ -371,14 +396,18 @@ def main():
             print(f"  {i}/{len(cibles)} — {len(rangs)} lignes")
 
     print(f"  {len(rangs)} lignes composees")
-    if not rangs:
+    # PANNE seulement si RIEN n'a ete appris. Un passage tombe entierement sur
+    # des cotations secondaires sans page n'est pas une panne : s'arreter ici
+    # empechait de les marquer, et le passage suivant retombait sur les memes,
+    # indefiniment.
+    if not rangs and not sans_page:
         journal("PANNE", s.etape, 0, "ROUGE", "aucune ligne extraite", s.resume())
         s.afficher()
         sys.exit(1)
 
     s.phase("differentiel")
-    a_ecrire = ecrire_differentiel("comptes2", "ticker || '|' || exercice",
-                                   rangs, COLONNES, s)
+    a_ecrire = (ecrire_differentiel("comptes2", "ticker || '|' || exercice",
+                                    rangs, COLONNES, s) if rangs else {})
     if a_ecrire:
         s.phase("ecriture")
         budget(len(a_ecrire), "comptes2")
@@ -399,6 +428,14 @@ def main():
     else:
         n = 0
         print("  rien a ecrire")
+
+    # Datation des lectures reussies — y compris quand le differentiel n'a rien
+    # trouve a ecrire : c'est la LECTURE qui remet le compteur a zero.
+    for i in range(0, len(lues), 20):
+        lot = lues[i:i + 20]
+        d1("UPDATE societe SET comptes_maj = ? WHERE ticker IN ("
+           + ", ".join("?" * len(lot)) + ")", [RUN_TS] + lot,
+           lignes=len(lot), table="societe")
 
     # Le marquage passe par `origine`, deja porteur de la provenance : aucune
     # colonne nouvelle, et la requete de cibles les ecarte au tour suivant.

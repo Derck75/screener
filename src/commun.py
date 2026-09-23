@@ -249,6 +249,30 @@ def ecrire_differentiel(table, cle, rangs, colonnes, s=None):
     return a_ecrire
 
 
+def migrer(table, colonnes):
+    """Cree les colonnes manquantes de `table` — {nom: type SQL}.
+
+    AUTO-MIGRATION. Deux incidents sont venus d'un ALTER TABLE oublie dans la
+    console : le script tournait, echouait sur « no such column », et il
+    fallait un aller-retour pour comprendre. Chaque script declare desormais
+    les colonnes qu'il ecrit et les cree lui-meme au demarrage. Idempotent :
+    une colonne presente n'est jamais touchee, et PRAGMA table_info est deja
+    eprouve en production par l'increment 4.
+
+    Rend la liste des colonnes ajoutees, pour qu'un script puisse initialiser
+    une colonne neuve (ex. dater les comptes deja presents)."""
+    presentes = {l["name"] for l in
+                 d1(f"PRAGMA table_info({table})")[0]["results"]}
+    ajoutees = []
+    for nom, typ in colonnes.items():
+        if nom not in presentes:
+            d1(f"ALTER TABLE {table} ADD COLUMN {nom} {typ}")
+            ajoutees.append(nom)
+    if ajoutees:
+        print(f"  migration {table} : {', '.join(ajoutees)} ajoutee(s)")
+    return ajoutees
+
+
 def verifier_schema(table, colonnes):
     """Echoue tout de suite, pas apres dix minutes de calcul."""
     presentes = {l["name"] for l in
