@@ -128,7 +128,10 @@ def dette_us(d):
         cands.append((g("_notes"), "C"))
     fin, cand = max(cands) if cands else (None, None)
     loy = [x for x in (g("_leaseLT"), g("_leaseCT")) if x is not None]
-    loyers = sum(loy) if loy else g("_leaseTot")
+    # Composantes ET total publies : le plus grand, une composante manquante
+    # (part courante seule, par exemple) ne devant jamais sous-estimer.
+    cands_loy = [x for x in (sum(loy) if loy else None, g("_leaseTot")) if x is not None]
+    loyers = max(cands_loy) if cands_loy else None
     if fin is None and loyers is None:
         return None, None
     return (fin or 0) + (loyers or 0), cand

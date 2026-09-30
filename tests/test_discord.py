@@ -10,7 +10,7 @@ for c in ["origine TEXT", "statut_serveur TEXT"]:
     except Exception: pass
 for c in ["profil_type TEXT", "drapeaux TEXT", "croissance_implicite REAL", "croissance_demontree REAL", "taux_obstacle REAL",
           "capi_eur REAL", "roic_organique REAL", "part_tresorerie REAL", "concordance REAL", "eva_sur_cours REAL", "score_moat_max INTEGER",
-          "ca_cagr5 REAL", "fcf_cagr5 REAL"]:
+          "ca_cagr5 REAL", "fcf_cagr5 REAL", "moat_propre TEXT"]:
     try: db.execute(f"ALTER TABLE metriques ADD COLUMN {c}")
     except Exception: pass
 try: db.execute("ALTER TABLE runs ADD COLUMN detail TEXT")

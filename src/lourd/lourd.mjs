@@ -177,7 +177,7 @@ export class KVRest {
       sa progression. Tout ce que ce passage écrit est donc servi de mémoire.
    ② INDEX `companyfacts` RELU À NEUF une fois par passage quand `neufCF` —
       le premier `get` rend `null`, ce qui déclenche le téléchargement — et
-      gardé trois jours au lieu d'un : un passage quotidien manqué ne fait pas
+      gardé huit jours au lieu d'un — au-delà du cycle de reconstruction des lots (7 j) : un passage manqué ne fait pas
       retomber le worker sur son repli `companyconcept`.
    ③ COMPTE des écritures : le plan gratuit en accorde 1 000 par jour au
       compte ENTIER, worker compris. */
@@ -194,7 +194,7 @@ export function kvLourd(kv, { neufCF = false } = {}) {
     async put(k, v, opt) {
       o.ecritures++;
       memo.set(k, String(v));
-      return kv.put(k, v, k.startsWith('cf:') ? { expirationTtl: 259200 } : opt);
+      return kv.put(k, v, k.startsWith('cf:') ? { expirationTtl: 691200 } : opt);
     },
     async delete(k) { o.ecritures++; memo.set(k, null); return kv.delete(k); },
     list: x => kv.list(x)

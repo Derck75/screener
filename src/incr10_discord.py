@@ -107,7 +107,7 @@ EXCEPTION = """
       OR
       (s.eligible_pea = 1
        AND COALESCE(m.concordance, m.epv_sur_cours) BETWEEN 0.90 AND 1.0
-       AND m.score_moat >= m.score_moat_max
+       AND m.moat_propre = 'Wide'
        AND m.croissance_demontree >= 6
        AND COALESCE(m.part_tresorerie, 0) < 0.4)
     )
@@ -175,10 +175,17 @@ def envoyer(titre, corps, couleur):
         taille += len(m) + 60
     if cur:
         messages.append(cur)
-    ok = True
-    for embeds in messages:
-        ok = _poster({"embeds": embeds}) and ok
-    return ok
+    # Succes = le PREMIER message est parti : il porte l'en-tete et les fiches.
+    # Exiger tous les messages faisait tout renvoyer la semaine suivante, y
+    # compris ce qui etait deja arrive ; un echec de suite est journalise.
+    premier = None
+    for i, embeds in enumerate(messages):
+        r = _poster({"embeds": embeds})
+        if i == 0:
+            premier = r
+        elif not r:
+            print(f"  ECHEC du message {i + 1}/{len(messages)} — contenu non renvoye")
+    return bool(premier)
 
 
 def _poster(charge):
@@ -252,6 +259,13 @@ def activite(brut):
     return court or None
 
 
+def pc(x):
+    """Pourcentage arrondi, ou « n.c. » : la voie croissance n'exige pas
+    d'EPV, et le noyau la refuse quand le dernier exercice n'a pas de nombre
+    d'actions — un None faisait echouer tout l'envoi."""
+    return "n.c." if x is None else f"{round(100 * x)} %"
+
+
 def ligne(c):
     pays = c.get("pays_siege") or "?"
     pea = "PEA" if c.get("eligible_pea") == 1 else "CTO"
@@ -268,7 +282,7 @@ def ligne(c):
          + (f"{act} · {voie}\n" if act else f"{voie}\n")
          # Formulation directe plutot que le sigle : « EPV/cours 60 % » ne dit
          # rien tant qu'on n'a pas la definition en tete.
-         + f"Profits actuels : **{round(100 * c['epv_sur_cours'])} % du cours**"
+         + f"Profits actuels : **{pc(c.get('epv_sur_cours'))} du cours**"
          + (f" · avec croissance : {round(100 * c['eva_sur_cours'])} %"
             if c.get("eva_sur_cours") is not None else "") + "\n"
          + (f"Seuil N : **{c['croissance_implicite']:+.1f} %/an** sur 10 ans "
@@ -286,7 +300,7 @@ def ligne(c):
 def compacte(c):
     """Une ligne par societe, pour la liste au-dela des cinq premieres."""
     return (f"**{str(c.get('nom') or '')[:30]}** `{c['ticker']}` "
-            f"{round(100 * c['epv_sur_cours'])} %"
+            f"{pc(c.get('epv_sur_cours'))}"
             + (" · PEA" if c.get("eligible_pea") == 1 else ""))
 
 
@@ -374,7 +388,8 @@ def main():
     migrer("metriques", {"roic_organique": "REAL", "ca_cagr5": "REAL",
                          "fcf_cagr5": "REAL", "part_tresorerie": "REAL",
                          "croissance_implicite": "REAL", "croissance_demontree": "REAL",
-                         "concordance": "REAL", "eva_sur_cours": "REAL"})
+                         "concordance": "REAL", "eva_sur_cours": "REAL",
+                         "capi_eur": "REAL", "taux_obstacle": "REAL", "moat_propre": "TEXT"})
 
     s.phase("lecture")
     base = ("FROM metriques m JOIN societe s ON s.ticker = m.ticker "
@@ -517,7 +532,7 @@ def main():
     if relances:
         blocs.append("🔻 **Déjà signalées, désormais moins chères**\n" + "\n".join(
             f"**{str(c.get('nom') or '')[:30]}** `{c['ticker']}` — cours en baisse de "
-            f"{round(100 * b)} % depuis le signalement, EPV {round(100 * c['epv_sur_cours'])} %"
+            f"{round(100 * b)} % depuis le signalement, EPV {pc(c.get('epv_sur_cours'))}"
             for c, b in relances))
     if lot or relances:
         blocs.append("*« Profits actuels » rapporte le pouvoir bénéficiaire — ce que "

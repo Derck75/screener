@@ -534,8 +534,11 @@ def ecrire(lignes):
         vals, params = [], []
         for l in lot:
             vals.append("(?, ?, ?, ?, ?, ?, ?, ?, 'intl', ?)")
+            # Capitalisation en DEVISE DE COTATION, comme l'ecrit l'etage prix :
+            # une valeur en euros ecrasait chaque mois la valeur locale, et
+            # l'etage valorisation la relisait comme des yens ou des wons.
             params += [l["ticker"], l["nom"][:120], l["pays"], l["ticker"].split(".")[-1],
-                       l["devise"], l.get("cap_eur"),
+                       l["devise"], l.get("cap"),
                        None if l["pea"] is None else (1 if l["pea"] else 0),
                        l["source"], ts]
         sql("INSERT INTO societe (ticker, nom, pays_siege, place, devise, "

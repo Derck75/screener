@@ -193,9 +193,13 @@ def main():
         t = l["ticker"]
         st, p, i, _ = profil(t, s)
         time.sleep(PAUSE)
-        if st in ("reseau", 429) or (isinstance(st, int) and st >= 500):
-            s.compte("incident")
-            continue                      # rien d'appris : retente au passage suivant
+        if st not in (200, 404, "illisible"):
+            # 429, 403, 5xx, coupure : rien d'appris sur la SOCIETE. Seul un
+            # 404 (page absente) ou une page servie sans pays ni ISIN datent
+            # l'echec — sinon une rafale anti-robot parquait 250 societes
+            # pour deux mois.
+            s.compte(f"incident_{st}")
+            continue
         if st != 200:
             s.compte(f"profil_{st}")
             maj.append((t, None, None, None, None, "404" if st == 404 else "illisible", l))
@@ -247,7 +251,7 @@ def main():
 def secondaires(s):
     """Un ISIN, une societe. Garde la cotation de la place du pays emetteur."""
     lignes = d1(
-        "SELECT s.ticker, s.isin, s.pays_siege, s.capitalisation, s.vaneck, "
+        "SELECT s.ticker, s.isin, s.pays_siege, s.capitalisation, s.vaneck, s.vaneck_vu_le, "
         "(SELECT COUNT(*) FROM comptes2 c WHERE c.ticker = s.ticker) AS n "
         "FROM societe s WHERE s.isin IS NOT NULL AND s.cik IS NULL "
         "AND instr(COALESCE(s.origine, ''), 'secondaire') = 0 AND s.isin IN ("
@@ -272,8 +276,14 @@ def secondaires(s):
             d1("UPDATE societe SET origine = COALESCE(origine, '') || ',secondaire' "
                "WHERE ticker = ?", [l["ticker"]], lignes=1, table="societe")
             if l.get("vaneck"):
-                d1("UPDATE societe SET vaneck = COALESCE(vaneck, ?) WHERE ticker = ?",
-                   [l["vaneck"], garde["ticker"]], lignes=1, table="societe")
+                # Drapeau TRANSFERE en entier, date de derniere vue comprise :
+                # sans elle, le passage VanEck suivant journalisait une sortie
+                # d'indice sur la cotation retenue. L'increment 2 reporte
+                # ensuite lui-meme ses lignes secondaires sur la primaire.
+                d1("UPDATE societe SET vaneck = COALESCE(vaneck, ?), "
+                   "vaneck_vu_le = COALESCE(?, vaneck_vu_le), vaneck_sorti_le = NULL "
+                   "WHERE ticker = ?",
+                   [l["vaneck"], l.get("vaneck_vu_le"), garde["ticker"]], lignes=1, table="societe")
             d1("DELETE FROM comptes2 WHERE ticker = ?", [l["ticker"]])
             d1("DELETE FROM metriques WHERE ticker = ?", [l["ticker"]])
             marquees += 1
