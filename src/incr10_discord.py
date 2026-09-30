@@ -52,7 +52,11 @@ QUALITE = """
     AND m.n_ex_roic_sup_seuil >= m.n_ex_total - 1
     AND (s.suivi_serveur IS NULL OR s.suivi_serveur = 0)
     AND m.croissance_implicite IS NOT NULL AND m.croissance_demontree IS NOT NULL
+    AND COALESCE(m.bande_n, '') <> 'reserve'
 """
+# RESERVE (§11 du cadre) : une croissance demontree portee par un FCF qui
+# diverge du CA et de l'EBIT, ou partie d'une annee en creux, ne fonde aucun
+# signal favorable. Mesure au premier passage : 45 % des bandes vertes.
 # ACQUEREURS : le ROIC organique au-dessus de 20 % repeche Broadcom, TransDigm
 # ou Schneider, mais le comptable doit rester au-dessus de 12 % — le cadre
 # n'admet jamais l'organique SEUL : le prix paye reste depense. A 9 %, le

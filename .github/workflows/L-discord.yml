@@ -41,9 +41,15 @@ jobs:
           CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          EXCEPTION: ${{ github.event.schedule == '7 17 * * 1-6' }}
+          # Le mode vient du schedule (filet) OU de l'entree du declenchement
+          # a l'heure par le worker : sans la seconde, un envoi d'exception
+          # declenche par le worker etait garde comme un hebdo (72 h) et saute.
+          EXCEPTION: ${{ github.event.schedule == '7 17 * * 1-6' || inputs.mode == 'exception' }}
+          MODE: ${{ inputs.mode }}
         run: |
-          if [ "$EXCEPTION" = "true" ]; then
+          if [ "$MODE" = "amorcage" ] || [ "$MODE" = "rattrapage" ]; then
+            echo "faire=true" >> "$GITHUB_OUTPUT"   # geste manuel delibere : jamais garde
+          elif [ "$EXCEPTION" = "true" ]; then
             python3 src/garde.py --etape incr10_discord_exception --heures 12
           else
             python3 src/garde.py --etape incr10_discord --heures 72

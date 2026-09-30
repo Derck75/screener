@@ -170,7 +170,7 @@ const COLONNES = ["roic_median", "roic_dernier", "spread_median", "n_ex_roic_sup
   "eva_capitaux", "eva_statut", "eva_h", "ca_cagr5", "fcf_cagr5", "roic_organique",
   "n_non_calculable", "moat_propre", "croissance_demontree", "croissance_source",
   "plancher_epv", "epv_capitaux", "epv_statut", "fcf_depart", "dette_nette", "rn_dernier",
-  "ebit_chutes", "noyau", "exclusion", "maj"];
+  "ebit_chutes", "fcf_divergence", "base_creux", "noyau", "exclusion", "maj"];
 const COLONNES_TEXTE = ["denominateur_roic", "base_roic", "profil_type", "profil_ko",
   "drapeaux", "eva_statut", "moat_propre", "croissance_source", "epv_statut", "noyau",
   "exclusion", "maj"];
@@ -202,7 +202,8 @@ async function main() {
     ca_cagr5: "REAL", fcf_cagr5: "REAL", roic_organique: "REAL",
     moat_propre: "TEXT", croissance_demontree: "REAL", croissance_source: "TEXT",
     plancher_epv: "REAL", epv_capitaux: "REAL", epv_statut: "TEXT", fcf_depart: "REAL",
-    dette_nette: "REAL", rn_dernier: "REAL", ebit_chutes: "INTEGER", noyau: "TEXT" });
+    dette_nette: "REAL", rn_dernier: "REAL", ebit_chutes: "INTEGER", noyau: "TEXT",
+    fcf_divergence: "REAL", base_creux: "INTEGER" });
   await migrer("societe", { secteur: "TEXT", sic: "TEXT" });
   console.log(`noyau : worker ${NOYAU_SOURCE.worker}, empreinte ${NOYAU_SOURCE.empreinte}`);
   const soc = {};
@@ -486,6 +487,26 @@ async function main() {
     if (cfc && Number.isFinite(cfc.retenu)) { gDem = cfc.retenu * 100; gSrc = cfc.court ? "fcf_court" : "fcf"; }
     else if (cep && Number.isFinite(cep.retenu)) { gDem = cep.retenu * 100; gSrc = cep.court ? "bpa_court" : "bpa"; }
 
+    // RESERVE DU CADRE (§11) — deux faits, jamais une correction du chiffre :
+    // 1. DIVERGENCE : un FCF qui croit nettement plus vite que le CA ET que
+    //    l'EBIT, sur les memes fenetres du noyau, ne vient ni du volume ni des
+    //    marges mais du BFR ou du capex, deux leviers a limite mathematique.
+    //    Mesuree en points : croissance retenue moins la plus haute des deux.
+    // 2. BASE EN CREUX : l'annee de depart est le point bas de la serie et
+    //    nettement sous sa mediane (constat du noyau) — le taux decrit une
+    //    sortie de creux, pas un rythme.
+    // L'etage valorisation en tire la bande « reserve » ; ici on ne fait que
+    // mesurer.
+    let fcfDiv = null, baseCreux = null;
+    if (gSrc && gSrc.startsWith("fcf")) {
+      const comp = [der.cagr.ca && der.cagr.ca.retenu, der.cagr.ebit && der.cagr.ebit.retenu]
+        .filter(Number.isFinite);
+      if (comp.length) fcfDiv = gDem - 100 * Math.max(...comp);
+      baseCreux = cfc.baseCreux ? 1 : 0;
+    } else if (gSrc) baseCreux = cep.baseCreux ? 1 : 0;
+    if (fcfDiv !== null && fcfDiv > 10) compte("fcf_divergence");
+    if (baseCreux) compte("base_creux");
+
     // PLANCHER EPV — celui du noyau, sur les memes comptes que le ROIC (audit
     // M1) : l'EBIT reconstitue par le resultat avant impot y entre aussi.
     let epvAction = null, epvCap = null, epvStatut = null;
@@ -532,7 +553,8 @@ async function main() {
       fcf_depart: (Number.isFinite(fcfDep) && fcfDep > 0) ? fcfDep : null,
       dette_nette: Number.isFinite(der1?.dn) ? der1.dn : null,
       rn_dernier: Number.isFinite(der1?.rn) ? der1.rn : null,
-      ebit_chutes: ebitChutes, noyau: NOYAU_SOURCE.worker,
+      ebit_chutes: ebitChutes, fcf_divergence: fcfDiv, base_creux: baseCreux,
+      noyau: NOYAU_SOURCE.worker,
       exclusion: excl, maj: RUN_TS,
     };
     if (Number.isFinite(epv?.valeur)) compte("epv_calculable");

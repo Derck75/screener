@@ -64,6 +64,7 @@ verifier(!String(M('CROI')?.drapeaux || '').includes('cyclique'), `croissance de
 verifier(M('MSFT')?.moat_propre && M('MSFT').score_moat_max >= 3, `moat propre du noyau (${M('MSFT')?.moat_propre} ${M('MSFT')?.score_moat}/${M('MSFT')?.score_moat_max})`);
 verifier(M('MSFT')?.croissance_source === 'fcf' && M('MSFT').croissance_demontree > 10, `croissance démontrée FCF (${M('MSFT')?.croissance_demontree?.toFixed(1)} %)`);
 verifier(M('MSFT')?.epv_capitaux > 0 && M('MSFT')?.plancher_epv > 0, 'EPV du noyau stockée');
+verifier(Number.isFinite(M('MSFT')?.fcf_divergence) && Math.abs(M('MSFT').fcf_divergence) < 3 && M('MSFT').base_creux === 0, `FCF aligné sur CA et EBIT : aucune divergence (${M('MSFT')?.fcf_divergence?.toFixed(1)} pts), base saine`);
 verifier(M('MSFT')?.fcf_depart > 0 && M('MSFT')?.noyau === 'w178', `FCF de départ et version du noyau (${M('MSFT')?.noyau})`);
 
 // Etage prix simule
@@ -84,6 +85,19 @@ const capiUSD = 800e9 * (1 / 11.7) / (1 / 1.08);
 verifier(Math.abs(eq.fcf_yield / (M("EQNR.OL").fcf_depart / capiUSD) - 1) < 1e-4, `rendement FCF sur la capitalisation en USD (${(eq.fcf_yield * 100).toFixed(1)} %)`);
 verifier(Math.abs(eq.capi_eur - 800e9 / 11.7) < 1, 'capitalisation en euros pour le plancher');
 verifier(M('SPAC').croissance_implicite === null, 'exclue : pas valorisée');
+// Reserve du cadre (§11) : calcul pur
+{
+  const base = { ticker: 'XX', capitalisation: 1e10, fcf_depart: 1e9, dette_nette: 0, eligible_pea: 0,
+    croissance_demontree: 30, fcf_divergence: 2, base_creux: 0 };
+  const sain = V.valoriser(base, { USD: 1, EUR: 1 });
+  verifier(sain.bande_n === 'vert', `FCF aligné : bande conservée (${sain.bande_n})`);
+  const div = V.valoriser({ ...base, fcf_divergence: 15 }, { USD: 1, EUR: 1 });
+  verifier(div.bande_n === 'reserve' && /bande vert non retenue/.test(div.n_note) && div.n_ratio === sain.n_ratio, `FCF +15 pts : réserve, ratio inchangé (${div.n_note})`);
+  const creux = V.valoriser({ ...base, base_creux: 1 }, { USD: 1, EUR: 1 });
+  verifier(creux.bande_n === 'reserve' && /creux/.test(creux.n_note), 'départ en creux : réserve');
+  const rouge = V.valoriser({ ...base, capitalisation: 5e10, croissance_demontree: 2, fcf_divergence: 15 }, { USD: 1, EUR: 1 });
+  verifier(rouge.bande_n === 'rouge', 'un rouge reste rouge malgré la divergence');
+}
 // Radiation : le cours disparait, la bande ne doit pas survivre
 db.prepare("UPDATE metriques SET cours = NULL WHERE ticker = 'CROI'").run();
 await V.main();
