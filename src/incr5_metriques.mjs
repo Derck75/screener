@@ -13,7 +13,8 @@
  * Sonde integree, budget verifie, ecriture differentielle.
  */
 
-import { derives, roicRetenu, profilSociete, ancrageEPV, ancrageEVA, mediane }
+import { derives, roicRetenu, profilSociete, ancrageEPV, ancrageEVA, moatPropre,
+         mediane, NOYAU_SOURCE }
   from './noyau.js';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -76,13 +77,20 @@ const INDEX_CA = {};
 const ACTIVITE_FINANCIERE = /insurance|assurance|\bbank|banque|savings institution|mortgage bankers|capital markets|marchés de capitaux|investment banking/i;
 const ACTIVITE_EPARGNEE = /insurance agents|insurance broker|courtage d'assurance/i;
 
-// Duree de fade de la brique EVA, deduite du score de moat PROXY. Le cadre
-// reserve vingt ans a un verdict Wide d'analyste ; un proxy ne l'autorise
-// pas — quinze ans est le maximum ici, et c'est deja genereux.
-function dureeFade(pts, max) {
-  if (!max) return 5;
-  const r = pts / max;
-  return r >= 0.8 ? 15 : r >= 0.5 ? 10 : 5;
+// HORS PERIMETRE PAR CODE SIC (audit C4). SPAC (6770, « blank checks ») et
+// fonds cotes — trusts de matieres premieres ou de bitcoin, fonds fermes —
+// n'ont pas d'exploitation : ils ressortaient « float », diagnostic qui envoie
+// chercher un modele economique la ou il n'y a qu'un vehicule. Le code SIC
+// est lu par l'increment 9 ; le libelle sert de repli.
+const SIC_HORS_PERIMETRE = { "6770": "SPAC", "6221": "fonds coté (matières premières)",
+  "6726": "fonds coté", "6722": "fonds coté" };
+const LIBELLE_HORS_PERIMETRE = /blank check|unit inv(estment)? trust|closed-end|face-amount cert|commodity contracts brokers/i;
+
+// Duree de fade de la brique EVA, deduite du verdict de moat PROPRE du noyau
+// (audit M3). Le cadre reserve vingt ans a un verdict Wide d'analyste ; un
+// verdict calcule ne l'autorise pas — quinze ans est le maximum ici.
+function dureeFade(verdict) {
+  return verdict === "Wide" ? 15 : verdict === "Narrow" ? 10 : 5;
 }
 
 const S = { t0: Date.now(), phases: {}, compteurs: {}, erreurs: {}, phase: null, pt: 0 };
@@ -160,7 +168,12 @@ const COLONNES = ["roic_median", "roic_dernier", "spread_median", "n_ex_roic_sup
   "conversion_fcf_rn", "actions_var_5a", "dette_sur_ca", "cp_sur_ca", "score_moat",
   "score_moat_max", "biais_acquereur", "ebit_dispersion", "drapeaux",
   "eva_capitaux", "eva_statut", "eva_h", "ca_cagr5", "fcf_cagr5", "roic_organique",
-  "n_non_calculable", "exclusion", "maj"];
+  "n_non_calculable", "moat_propre", "croissance_demontree", "croissance_source",
+  "plancher_epv", "epv_capitaux", "epv_statut", "fcf_depart", "dette_nette", "rn_dernier",
+  "ebit_chutes", "noyau", "exclusion", "maj"];
+const COLONNES_TEXTE = ["denominateur_roic", "base_roic", "profil_type", "profil_ko",
+  "drapeaux", "eva_statut", "moat_propre", "croissance_source", "epv_statut", "noyau",
+  "exclusion", "maj"];
 
 /* EMPREINTE — met fin au debat « quel fichier tourne ? ».
    Une version ecrite a la main peut etre fausse : il suffit d'oublier de
@@ -178,7 +191,7 @@ function empreinte() {
 }
 
 async function main() {
-  console.log(`incr5_metriques v14 (noyau partage) — Run ${RUN_TS}`);
+  console.log(`incr5_metriques v15 (noyau partage) — Run ${RUN_TS}`);
   console.log(`empreinte ${empreinte()}`);
   console.log(`seuil de rentabilite forfaitaire : ${SEUIL} % — PAS un WACC`);
   console.log(`plafond d'ecritures : ${PLAFOND === 0 ? "AUCUN (controle desactive)" : PLAFOND} — origine : ${PLAFOND_ORIGINE}`);
@@ -186,10 +199,14 @@ async function main() {
   phase("univers");
   await migrer("metriques", { ebit_dispersion: "REAL", drapeaux: "TEXT",
     eva_capitaux: "REAL", eva_statut: "TEXT", eva_h: "INTEGER",
-    ca_cagr5: "REAL", fcf_cagr5: "REAL", roic_organique: "REAL" });
-  await migrer("societe", { secteur: "TEXT" });
+    ca_cagr5: "REAL", fcf_cagr5: "REAL", roic_organique: "REAL",
+    moat_propre: "TEXT", croissance_demontree: "REAL", croissance_source: "TEXT",
+    plancher_epv: "REAL", epv_capitaux: "REAL", epv_statut: "TEXT", fcf_depart: "REAL",
+    dette_nette: "REAL", rn_dernier: "REAL", ebit_chutes: "INTEGER", noyau: "TEXT" });
+  await migrer("societe", { secteur: "TEXT", sic: "TEXT" });
+  console.log(`noyau : worker ${NOYAU_SOURCE.worker}, empreinte ${NOYAU_SOURCE.empreinte}`);
   const soc = {};
-  for (const l of (await d1("SELECT ticker, vaneck, vaneck_sorti_le, devise, pays_siege, secteur "
+  for (const l of (await d1("SELECT ticker, vaneck, vaneck_sorti_le, devise, pays_siege, secteur, sic "
                           + "FROM societe"))[0].results)
     soc[l.ticker] = l;
 
@@ -310,15 +327,24 @@ async function main() {
     //    beneficiaire normalise, c'est un sommet de cycle capitalise.
     //    Greenwald normalise sur un cycle COMPLET ; six exercices dont deux
     //    exceptionnels ne le sont pas.
+    //    AUDIT C3 — LA REGLE « EBIT MAX >= 2 x MEDIANE » MARQUAIT LA
+    //    CROISSANCE : sur douze exercices, tout EBIT qui croit de plus de 13 %
+    //    par an la franchit mecaniquement (Microsoft, Idexx, Copart, FICO...).
+    //    Un cycle se reconnait a ses CHUTES, pas a son niveau : il faut au moins
+    //    deux replis de l'EBIT de 25 % ou plus d'un exercice au suivant (un
+    //    passage en perte en est un). La dispersion reste publiee, pour
+    //    information : elle ne decide plus.
     const ebitS = srz("ebit").filter(v => v > 0);
     let ebitDisp = null;
     if (ebitS.length >= 4) {
       const med = mediane(ebitS);
-      if (med > 0) {
-        ebitDisp = Math.max(...ebitS) / med;
-        if (ebitDisp >= 2) drapeaux.push("cyclique");
-      }
+      if (med > 0) ebitDisp = Math.max(...ebitS) / med;
     }
+    const ebitTous = srz("ebit");
+    let ebitChutes = 0;
+    for (let i = 1; i < ebitTous.length; i++)
+      if (ebitTous[i - 1] > 0 && ebitTous[i] < 0.75 * ebitTous[i - 1]) ebitChutes++;
+    if (ebitChutes >= 2) drapeaux.push("cyclique");
 
     // 2. DIVISION DU NOMINAL. Un ratio d'actions proche d'un entier de 2 a 10
     //    en un seul exercice n'est pas une emission : c'est un split. Il fausse
@@ -374,9 +400,19 @@ async function main() {
            + `ne le voit pas, et son ROIC mesure le rendement de ses placements`;
       compte("financier_par_activite");
     }
-    const excl = ["financier", "float", "incoherent"].includes(P.type)
-      ? `${P.type} — ${String(P.ko || "").slice(0, 150)}` : null;
-    if (excl) compte("exclues_" + P.type);
+    // HORS PERIMETRE (SPAC, fonds) — avant tout diagnostic de bilan.
+    const sic = String((soc[ticker] || {}).sic || "");
+    const horsPerimetre = SIC_HORS_PERIMETRE[sic]
+      || (LIBELLE_HORS_PERIMETRE.test(activite) ? "véhicule sans exploitation" : null);
+    // « incomplet » (noyau w178) : des postes manquent pour conclure. Ce n'est
+    // pas un « float » — le message envoyait chercher un modele economique la
+    // ou il manque une ligne de bilan (audit C4).
+    let excl = null;
+    if (horsPerimetre) { excl = `hors_perimetre — ${horsPerimetre} (SIC ${sic || "n.c."})`; compte("exclues_hors_perimetre"); }
+    else if (["financier", "float", "incoherent", "incomplet"].includes(P.type)) {
+      excl = `${P.type} — ${String(P.ko || "").slice(0, 150)}`;
+      compte("exclues_" + P.type);
+    }
     compte("profil_" + P.type);
 
     const ca = der1?.ca || null;
@@ -385,12 +421,19 @@ async function main() {
     const gw = der1?.goodwill, act = der1?.assets;
     const biais = (gw && act && gw / act > 0.30) ? 1 : 0;
 
-    let pts = 0, mx = 0;
+    // MOAT : le verdict PROPRE du noyau, celui que `moat` publie (audit M3).
+    // L'ancien score proxy comptait deux fois le ROIC — niveau et persistance
+    // — plus trois points VanEck, et trois societes de qualite sur quatre le
+    // saturaient. Le noyau ajoute la stabilite de la marge brute et la
+    // regularite du CA, et traite l'absence de VanEck hors denominateur.
+    // Le seuil forfaitaire de 9 % tient lieu de WACC, comme partout ici.
     const sv = soc[ticker] || {};
-    if (sv.vaneck && !sv.vaneck_sorti_le) { pts += 3; mx += 3; }
-    if (nEx >= 4) { mx += 3; const sous = nEx - nSup;
-                    pts += sous === 0 ? 3 : sous === 1 ? 2 : sous === 2 ? 1 : 0; }
-    if (roicMed != null) { mx += 2; pts += roicMed >= 15 ? 2 : roicMed >= 10 ? 1 : 0; }
+    const veActif = !!(sv.vaneck && !sv.vaneck_sorti_le);
+    let M = { points: 0, max: 0, verdict: null };
+    try {
+      M = moatPropre(der, SEUIL / 100, { statut: "OK", present: veActif, ou: "VanEck " + (sv.vaneck || "") });
+    } catch (e) { erreur("moat", `${ticker} ${e.message}`); }
+    const pts = M.points, mx = M.max;
     const mbS = ans.map(a => { const l = der.lignes[a];
       return (l?.ca && Number.isFinite(l?.margeBrute)) ? l.margeBrute * 100 : null; })
       .filter(Number.isFinite);
@@ -414,7 +457,7 @@ async function main() {
     // ne signale rien — et la brique EVA ne s'executait jamais.
     const actionsDer = der1?.actions;
     if (actionsDer > 0) {
-      evaH = dureeFade(pts, mx);
+      evaH = dureeFade(M.verdict);
       try {
         const E = ancrageEVA(der, SEUIL / 100, evaH, actionsDer, { profil: P });
         if (E?.ko) {
@@ -433,6 +476,32 @@ async function main() {
     }
 
     if (CANARI.includes(ticker)) etatCanari[ticker] = { roicMed, type: P.type, excl };
+
+    // CROISSANCE DEMONTREE (audit M4) : celle du cadre et de `dossier` — CAGR
+    // du FCF, le plus bas des fenetres 5 ans et longue (`retenu` du noyau) ;
+    // repli sur le BPA quand le FCF ne se chiffre pas. Le minimum du CA, du FCF
+    // et des deux fenetres rendait Adyen a -12 % et LVMH a -1,3 %.
+    let gDem = null, gSrc = null;
+    const cfc = der.cagr && der.cagr.fcf, cep = der.cagr && der.cagr.eps;
+    if (cfc && Number.isFinite(cfc.retenu)) { gDem = cfc.retenu * 100; gSrc = cfc.court ? "fcf_court" : "fcf"; }
+    else if (cep && Number.isFinite(cep.retenu)) { gDem = cep.retenu * 100; gSrc = cep.court ? "bpa_court" : "bpa"; }
+
+    // PLANCHER EPV — celui du noyau, sur les memes comptes que le ROIC (audit
+    // M1) : l'EBIT reconstitue par le resultat avant impot y entre aussi.
+    let epvAction = null, epvCap = null, epvStatut = null;
+    if (epv && Number.isFinite(epv.valeur)) {
+      epvAction = epv.valeur;
+      epvCap = Number.isFinite(actionsDer) && actionsDer > 0 ? epv.valeur * actionsDer : null;
+      epvStatut = "ok";
+    } else epvStatut = String((epv && epv.ko) || "non calculée").slice(0, 90);
+
+    // FCF DE DEPART DU SEUIL N : le plus bas du dernier exercice et de la
+    // mediane des trois derniers — un BFR libere une seule fois ne doit pas
+    // rendre le prix plus facile a justifier qu'il ne l'est.
+    const fcf3 = fcfS.slice(-3);
+    const fcfDern = fcfS.length ? fcfS[fcfS.length - 1] : null;
+    const fcfDep = (fcf3.length >= 2 && Number.isFinite(fcfDern))
+      ? Math.min(fcfDern, mediane(fcf3)) : null;
 
     const actS = srz("shares");
     rangs[ticker] = {
@@ -458,6 +527,12 @@ async function main() {
       // series brutes. Meme piege que `shares` ci-dessus.
       score_moat: pts, score_moat_max: mx, biais_acquereur: biais,
       n_non_calculable: [roicMed, cg("ca"), cg("fcf"), mbMed].filter(x => x == null).length,
+      moat_propre: M.verdict || null, croissance_demontree: gDem, croissance_source: gSrc,
+      plancher_epv: epvAction, epv_capitaux: epvCap, epv_statut: epvStatut,
+      fcf_depart: (Number.isFinite(fcfDep) && fcfDep > 0) ? fcfDep : null,
+      dette_nette: Number.isFinite(der1?.dn) ? der1.dn : null,
+      rn_dernier: Number.isFinite(der1?.rn) ? der1.rn : null,
+      ebit_chutes: ebitChutes, noyau: NOYAU_SOURCE.worker,
       exclusion: excl, maj: RUN_TS,
     };
     if (Number.isFinite(epv?.valeur)) compte("epv_calculable");
@@ -541,7 +616,7 @@ async function main() {
 
   if (aEcrire.length) {
     phase("ecriture");
-    const cout = aEcrire.length * 3;   // metriques porte 2 index
+    const cout = aEcrire.length * 3;   // metriques : idx_screen + la cle primaire
     if (PLAFOND > 0) {
       // Les intentions ne comptent que deux heures : un run qui n'a jamais
       // abouti n'a pas ecrit ce qu'il annoncait, et les cumuler bloquait le
@@ -561,13 +636,15 @@ async function main() {
     await journal("EN COURS", cout, "—", `intention de ${cout} ecritures`);
 
     const liste = "ticker, " + COLONNES.join(", ");
-    for (let i = 0; i < aEcrire.length; i += 100) {
-      const lot = aEcrire.slice(i, i + 100).map(([t, v]) =>
+    // Lots de 50 : une ligne porte desormais pres de cinquante colonnes, dont
+    // plusieurs libelles de 200 caracteres, et D1 refuse une requete au-dela
+    // de 100 Ko. A 100 lignes, le lot frolait la limite.
+    for (let i = 0; i < aEcrire.length; i += 50) {
+      const lot = aEcrire.slice(i, i + 50).map(([t, v]) =>
         "(" + tx(t) + ", " + COLONNES.map(c =>
-          ["denominateur_roic", "base_roic", "profil_type", "profil_ko",
-           "drapeaux", "eva_statut", "exclusion", "maj"].includes(c) ? tx(v[c]) : nb(v[c])).join(", ") + ")");
+          COLONNES_TEXTE.includes(c) ? tx(v[c]) : nb(v[c])).join(", ") + ")");
       await d1(`INSERT OR REPLACE INTO metriques (${liste}) VALUES ` + lot.join(", "));
-      if ((i + 100) % 1000 === 0) console.log(`  ecrit ${Math.min(i + 100, aEcrire.length)}/${aEcrire.length}`);
+      if ((i + 50) % 1000 === 0) console.log(`  ecrit ${Math.min(i + 50, aEcrire.length)}/${aEcrire.length}`);
     }
   }
 

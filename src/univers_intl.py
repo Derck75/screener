@@ -86,6 +86,16 @@ PLACES = {
     "twn": (".TW", "TW", False, "TWD", ["taiwan-stock-exchange"]),
     "tor": (".TO", "CA", False, "CAD", ["toronto-stock-exchange"]),
 }
+# PLACES MIXTES (audit C1) — Xetra, Vienne, Prague et SIX cotent en nombre
+# des societes etrangeres. Deux consequences :
+#   1. elles sont parcourues EN DERNIER, dans cet ordre : une societe presente
+#      sur sa place d'origine y est retenue, jamais sur sa cotation secondaire.
+#      L'ancien ordre faisait passer Xetra avant SIX : une suisse ressortait
+#      « .DE », pays DE, presumee eligible au PEA ;
+#   2. le pays de la place n'y presume RIEN : siege et eligibilite y restent
+#      vides jusqu'a la lecture du profil (increment 12, pays + ISIN).
+MIXTES = ["swx", "pra", "vie", "etr"]
+
 # ECARTEES VOLONTAIREMENT : frankfurt, dusseldorf, hamburg, munich, stuttgart
 # dupliquent Xetra sur les memes societes ; london-stock-exchange-aim et
 # spotlight-stock-market sont des marches de croissance sans comptes
@@ -223,7 +233,13 @@ def extraire(html):
 
 def charger_sec():
     """Noms de l'univers SEC. LECTURE SEULE — aucune ecriture, donc utilisable
-    quand le quota d'ecriture est epuise."""
+    quand le quota d'ecriture est epuise.
+
+    RESTREINT AUX DEPOSANTS DONT LES COMPTES US SONT SERVIS (audit C1). Un
+    emetteur etranger qui depose un 20-F en IFRS — ASML, SAP, Novo — a un CIK
+    mais aucun compte us-gaap : la voie SEC ne le chiffre jamais. Le compter
+    comme « deja couvert » ecartait sa cotation d'origine, et la societe
+    disparaissait des DEUX univers."""
     a, b, t = (os.environ.get(k) for k in ("CF_ACCOUNT", "CF_DB", "CF_TOKEN"))
     if not all((a, b, t)):
         print("  variables Cloudflare absentes — detection SEC desactivee")
@@ -233,8 +249,10 @@ def charger_sec():
     while True:
         req = u.Request(
             f"https://api.cloudflare.com/client/v4/accounts/{a}/d1/database/{b}/query",
-            data=json.dumps({"sql": "SELECT ticker, nom FROM societe WHERE cik IS NOT NULL "
-                                    "ORDER BY ticker LIMIT 2000 OFFSET ?",
+            data=json.dumps({"sql": "SELECT s.ticker, s.nom FROM societe s WHERE s.cik IS NOT NULL "
+                                    "AND EXISTS (SELECT 1 FROM comptes2 c WHERE c.ticker = s.ticker "
+                                    "AND c.source = 'frames') "
+                                    "ORDER BY s.ticker LIMIT 2000 OFFSET ?",
                              "params": [page * 2000]}).encode(),
             headers={"Authorization": f"Bearer {t}", "Content-Type": "application/json"})
         try:
@@ -276,7 +294,11 @@ def main():
     a = ap.parse_args()
 
     cibles = [p.strip() for p in a.places.split(",") if p.strip()] or list(PLACES)
-    print(f"EXPLORATION v3 — aucune ecriture · seuil {a.cap_min / 1e6:.0f} M EUR\n")
+    # Places d'origine d'abord, places mixtes ensuite (voir MIXTES).
+    cibles = ([c for c in cibles if c not in MIXTES]
+              + [c for c in MIXTES if c in cibles])
+    print(f"UNIVERS INTERNATIONAL v4 — {'ECRITURE' if a.ecrire else 'exploration, aucune ecriture'}"
+          f" · seuil {a.cap_min / 1e6:.0f} M EUR\n")
 
     if a.lister:
         try:
@@ -320,7 +342,8 @@ def main():
 
         lignes, forme = extraire(html)
         avec_cap = sum(1 for l in lignes if l["cap"])
-        secondaires = doublons = retenues = etrangeres = 0
+        secondaires = doublons = retenues = etrangeres = mixtes_doubles = 0
+        mixte = code in MIXTES
         gardees = []
         for l in lignes:
             l["cap_eur"] = l["cap"] * taux if l["cap"] else None
@@ -343,11 +366,26 @@ def main():
                 secondaires += 1          # cotation secondaire d'un deposant SEC
                 continue
             if n in vus:
-                doublons += 1             # deja vue sur une autre place europeenne
-                continue
-            vus[n] = (code, l["sym"])
-            l["ticker"] = l["sym"].replace(".", "-") + suffixe
-            l["pays"], l["pea"], l["devise"] = pays, elig, devise
+                # Deja vue sur une place d'ORIGINE : c'est celle-la qui compte.
+                # Deja vue seulement sur une AUTRE place mixte (une autrichienne
+                # a Prague et a Vienne) : on ne sait pas laquelle est la bonne
+                # sans le siege — les deux sont ecrites, et l'ISIN tranche a
+                # l'increment 12, qui marque la cotation secondaire.
+                if not (mixte and vus[n][0] in MIXTES):
+                    doublons += 1
+                    continue
+                mixtes_doubles += 1
+            vus.setdefault(n, (code, l["sym"]))
+            # POINT FINAL RETIRE : Londres sert « BA. », « RR. », « BP. ». Le
+            # point devenait un tiret — « BA-.L » — et le ticker n'existait ni
+            # chez Yahoo ni chez StockAnalysis (BAE Systems est LON:BA).
+            l["ticker"] = l["sym"].rstrip(".").replace(".", "-") + suffixe
+            if mixte:
+                l["pays"], l["pea"], l["devise"] = None, None, devise
+                l["source"] = "place mixte — siege a lire (profil StockAnalysis, increment 12)"
+            else:
+                l["pays"], l["pea"], l["devise"] = pays, elig, devise
+                l["source"] = "presomption de place (StockAnalysis) — a confirmer contre la liste du courtier"
             gardees.append(l)
             retenues_globales.append(l)
             retenues += 1
@@ -359,7 +397,7 @@ def main():
             continue
         print(f"{code:5} {pays}  {len(lignes):4} lues{tronque} · {avec_cap} avec capi · "
               f"{secondaires} secondaires · {etrangeres} etrangeres · "
-              f"{doublons} doublons · {retenues} retenues"
+              f"{doublons} doublons · {mixtes_doubles} doubles mixtes · {retenues} retenues"
               f"{'  [PEA]' if elig else ''}")
         for l in gardees[:3]:
             cap = f"{l['cap_eur'] / 1e9:.1f} Md€" if l.get("cap_eur") else "n.c."
@@ -391,13 +429,15 @@ def main():
         print(f"  {signales} paires — la normalisation ne les tranche pas, elle les montre")
 
     print("\n--- SYNTHESE ---")
-    tot = pea = sec_tot = 0
+    tot = pea = sec_tot = mix = 0
     for code, pays, lues, secondaires, retenues, etat in resume:
         print(f"  {code:5} {pays:3} lues {lues:4}  secondaires {secondaires:4}  "
               f"retenues {retenues:4}  {etat}")
         tot += retenues
         sec_tot += secondaires
-        if PLACES[code][2]:
+        if code in MIXTES:
+            mix += retenues
+        elif PLACES[code][2]:
             pea += retenues
     print("\n  repartition par bande de taille (en euros) :")
     for b in ("mega", "large", "mid", "small", "micro"):
@@ -405,6 +445,7 @@ def main():
             print(f"    {b:6} {bandes_tot[b]:5}")
     print(f"\n  univers retenu apres nettoyage : {tot}")
     print(f"  dont places de la zone PEA     : {pea}")
+    print(f"  dont places mixtes a profiler  : {mix}  (siege et PEA lus a l'increment 12)")
     print(f"  cotations secondaires ecartees : {sec_tot}")
     if a.ecrire:
         print("\n[ecriture]")
@@ -461,6 +502,11 @@ def ecrire(lignes):
             sys.exit(1)
         return j["result"][0].get("results", [])
 
+    # TICKERS A POINT FINAL (audit C1) : « BA-.L » n'existe nulle part. Ils
+    # sont retires de toutes les tables ; l'ecriture qui suit les reinscrit
+    # sous leur vrai ticker (« BA.L »), et l'increment 8 relira leurs comptes.
+    for table in ("comptes2", "metriques", "societe"):
+        r = sql(f"DELETE FROM {table} WHERE ticker LIKE '%-.%'")
     # Budget : `societe` porte 1 index, donc 2 ecritures par ligne.
     deja = sql("SELECT COALESCE(SUM(lignes_ecrites),0) AS n FROM runs "
                "WHERE debut >= date('now')")[0]["n"] or 0
@@ -483,24 +529,25 @@ def ecrire(lignes):
            "WHEN instr(origine,'intl')>0 THEN origine ELSE origine||',intl' END, "
            "maj=excluded.maj")
     n = 0
-    for i in range(0, len(lignes), 8):   # 9 colonnes x 8 lignes = 72 variables
+    for i in range(0, len(lignes), 8):   # 9 variables x 8 lignes = 72
         lot = lignes[i:i + 8]
         vals, params = [], []
         for l in lot:
-            vals.append("(?, ?, ?, ?, ?, ?, ?, 'intl', ?)")
+            vals.append("(?, ?, ?, ?, ?, ?, ?, ?, 'intl', ?)")
+            # Capitalisation en DEVISE DE COTATION, comme l'ecrit l'etage prix :
+            # une valeur en euros ecrasait chaque mois la valeur locale, et
+            # l'etage valorisation la relisait comme des yens ou des wons.
             params += [l["ticker"], l["nom"][:120], l["pays"], l["ticker"].split(".")[-1],
-                       l["devise"], l.get("cap_eur"), 1 if l["pea"] else 0,
-                       ts]
+                       l["devise"], l.get("cap"),
+                       None if l["pea"] is None else (1 if l["pea"] else 0),
+                       l["source"], ts]
         sql("INSERT INTO societe (ticker, nom, pays_siege, place, devise, "
-            "capitalisation, eligible_pea, origine, maj) VALUES "
+            "capitalisation, eligible_pea, source_eligibilite, origine, maj) VALUES "
             + ", ".join(vals) + " ON CONFLICT(ticker) DO UPDATE SET " + MAJ, params)
         n += len(lot)
         if n % 400 == 0 or n == len(lignes):
             print(f"  ecrit {n}/{len(lignes)}")
 
-    sql("UPDATE societe SET source_eligibilite = ? WHERE origine LIKE '%intl%' "
-        "AND source_eligibilite IS NULL",
-        ["presomption de place (StockAnalysis) — a confirmer contre la liste du courtier"])
     sql("INSERT INTO runs (debut, fin, etape, statut, lignes_ecrites, canari, message, detail)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         [ts, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "incr7_univers_intl",

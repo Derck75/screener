@@ -1,0 +1,45 @@
+name: W · travaux lourds
+# Travaux du serveur MCP que le plan gratuit de Cloudflare ne peut pas porter
+# (index EDGAR companyfacts, ingestion ESEF, pages StockAnalysis, outils
+# délégués). Déclenché à l'heure par le cron du worker, et à la demande par le
+# worker lui-même (entrée `cle`, pointeur aléatoire vers une demande en KV).
+# Le `schedule` ci-dessous n'est qu'un filet : il se saute seul si un passage
+# a réussi dans les 12 h.
+on:
+  schedule:
+    - cron: '41 7 * * *'
+  workflow_dispatch:
+    inputs:
+      cle:
+        description: "Pointeur de demande (laisser vide pour un passage complet)"
+        required: false
+        default: ""
+
+# Un passage quotidien à la fois ; chaque demande a son propre groupe — un
+# groupe unique ferait annuler par GitHub une demande en attente par la suivante.
+concurrency:
+  group: lourd-${{ inputs.cle || 'quotidien' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  lourd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: src/lourd
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Travaux lourds
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_KV_ID: ${{ secrets.CF_KV_ID }}
+          CLE: ${{ inputs.cle }}
+          MODE: ${{ github.event_name == 'schedule' && 'planifie' || 'cron' }}
+        run: node src/lourd/lourd.mjs

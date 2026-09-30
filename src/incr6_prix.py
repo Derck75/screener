@@ -1,22 +1,15 @@
 #!/usr/bin/env python3
 """
-INCREMENT 6 — Etage prix -> colonnes de prix de `metriques`.
+INCREMENT 6 v15 — Cours et capitalisations -> `metriques.cours`,
+`societe.capitalisation`.
 
-NE TRAITE QUE LES PRE-QUALIFIEES. Le filtre de qualite ne depend pas du prix :
-payer un appel de cotation pour 4 400 societes dont 3 500 sont deja hors jeu
-serait du temps et du quota depenses sans decision au bout.
-
-UN SEUL APPEL PAR SOCIETE rend le cours du jour ET six ans de clotures
-mensuelles. Le multiple median PROPRE AU TITRE en decoule sans appel
-supplementaire — et c'est la seule reference de cherte utilisable : une
-mediane sectorielle melange des societes aux moats et aux marges differents,
-et n'est pas sourcable de facon stable.
-
-PLANCHER EPV, JAMAIS UNE FAIR VALUE. EBIT median imposé, capitalise a un
-taux-obstacle pose de 10 %, dette nette deduite. Aucun WACC, aucun beta. Il dit
-ce que vaudrait la societe si elle ne grandissait plus jamais — un plancher, a
-cote duquel se lit la part du cours qui repose sur une croissance non encore
-realisee. Il ne se moyenne avec rien.
+CE QUI A CHANGE (audit C2, M1, M5). Cet etage calculait lui-meme l'EPV, la
+« croissance exigee » (un Gordon perpetuel, pas le seuil N du cadre) et la
+croissance demontree — trois definitions paralleles a celles du serveur. Il ne
+fait plus que COTER : toutes les societes non exclues, sans plancher de ROIC.
+Les ratios de prix sont calcules ensuite par l'etage valorisation
+(incr7_valorisation.mjs), avec le noyau du worker : un seul moteur DCF, une
+seule EPV.
 
 Idempotent : relancable sans dommage.
 """
@@ -327,7 +320,8 @@ def cours_depuis_listes(s):
                         (m.group(2) or "").upper(), 1)
             # Le ticker de la base porte le suffixe de sa place ; le point
             # d'une classe d'actions devient un tiret, comme partout ailleurs.
-            out[c[i_sym].upper().replace(".", "-") + suffixe] = (px, cap)
+            # Point final retire (Londres : « BA. ») — voir univers_intl.
+            out[c[i_sym].upper().rstrip(".").replace(".", "-") + suffixe] = (px, cap)
             n += 1
         print(f"  {chemin}{' ' + suffixe if suffixe else ''} : {n} cours")
         s.compte("cours_lus", n)
@@ -391,52 +385,20 @@ def main():
               f"{_b.count(chr(10).encode()) + 1} lignes")
     except OSError:
         print("empreinte indisponible")
-    print(f"incr6_prix v14 — Run {RUN_TS}"
+    print(f"incr6_prix v15 (cours seuls) — Run {RUN_TS}"
           + (f" — tranche {a.tranche}/{a.nb_tranches}" if a.tranche else ""))
 
-    migrer("metriques", {"ca_cagr5": "REAL", "fcf_cagr5": "REAL",
-                         "roic_organique": "REAL", "eva_sur_cours": "REAL", "concordance": "REAL",
-                         "part_tresorerie": "REAL", "croissance_implicite": "REAL",
-                         "croissance_demontree": "REAL", "taux_obstacle": "REAL"})
-
-    # ---- diagnostic demande : pourquoi la moitie de l'univers est ecartee ----
-    print("\nventilation des exclusions mecaniques :")
-    for l in d1("SELECT substr(exclusion, 1, instr(exclusion || ' —', ' —') - 1) AS motif, "
-                "COUNT(*) AS n FROM metriques WHERE exclusion IS NOT NULL "
-                "GROUP BY motif ORDER BY n DESC")[0]["results"]:
-        print(f"  {l['n']:5}  {l['motif']}")
-    mixte = d1("SELECT COUNT(*) AS n FROM metriques WHERE denominateur_roic = 'mixte'"
-               )[0]["results"][0]["n"]
-    print(f"  {mixte:5}  (hors exclusion) series a denominateur de ROIC mixte")
+    migrer("metriques", {"maj_cours": "TEXT"})
 
     # ---- cibles -------------------------------------------------------------
-    lignes_cibles = d1(
-        "SELECT ticker, eva_capitaux, ca_cagr, fcf_cagr, ca_cagr5, fcf_cagr5 "
-        "FROM metriques WHERE exclusion IS NULL "
-        # Les acquereurs dont le ROIC organique depasse 20 % recoivent aussi un
-        # cours : sans lui, le filtre organique ne servirait a rien en aval.
-        "AND (roic_median >= ? OR roic_organique >= 20) "
-        "ORDER BY roic_median DESC", [ROIC_MIN]
-    )[0]["results"]
-    # L'EVA est calculee a l'etage metriques ; elle voyage avec la cible
-    # plutot que d'imposer une seconde lecture de la table.
-    EVA = {l["ticker"]: l.get("eva_capitaux") for l in lignes_cibles}
-    # TAUX-OBSTACLE PAR ENVELOPPE (cadre, seuil N) : 10 % en PEA, 11,5 % en
-    # CTO. Un taux unique jugeait les candidates hors PEA trop favorablement —
-    # l'ecart de 1,5 point est celui de la fiscalite.
-    PEA = {l["ticker"] for l in
-           d1("SELECT ticker FROM societe WHERE eligible_pea = 1")[0]["results"]}
-    # Croissance DEMONTREE : le plus bas du CAGR du chiffre d'affaires et de
-    # celui du FCF, comme l'exige le cadre — jamais le plus flatteur.
-    DEMONTRE = {}
-    for l in lignes_cibles:
-        # Le cadre : CAGR 5 ans ET fenetre longue, RETENIR LE PLUS BAS — du
-        # chiffre d'affaires comme du FCF.
-        v = [x for x in (l.get("ca_cagr"), l.get("fcf_cagr"),
-                         l.get("ca_cagr5"), l.get("fcf_cagr5")) if x is not None]
-        DEMONTRE[l["ticker"]] = min(v) if v else None
-    cibles = [l["ticker"] for l in lignes_cibles]
-    print(f"\n{len(cibles)} societes pre-qualifiees (ROIC median >= {ROIC_MIN} %)")
+    # TOUTES LES NON-EXCLUES (audit M5). Seules les societes a ROIC >= 10 %
+    # recevaient un cours : le preset `decote`, annonce « sans filtre de
+    # qualite », ne voyait donc que 1 253 societes sur 3 560. Le tri par
+    # qualite appartient au crible, pas a la collecte des cours.
+    cibles = [l["ticker"] for l in d1(
+        "SELECT ticker FROM metriques WHERE exclusion IS NULL ORDER BY roic_median DESC"
+    )[0]["results"]]
+    print(f"\n{len(cibles)} societes non exclues")
     if a.tranche:
         # Repartition par modulo : chaque tranche recoit un echantillon
         # comparable, la ou un decoupage par bloc donnerait a la premiere
@@ -447,20 +409,19 @@ def main():
         journal("PANNE", f"incr6_prix_t{a.tranche}", 0, "ROUGE", "aucune cible")
         sys.exit(1)
 
-    # ---- comptes des cibles -------------------------------------------------
+    # ---- nombre d'actions du dernier exercice : repli de capitalisation ----
     vise = set(cibles)
-    comptes = {}
+    actions_der = {}
     page = 0
     while True:
-        r = d1("SELECT ticker, exercice, ebit, netIncome, cfo, capex, debt, "
-               "cash, shares, tax, pretax, clot FROM comptes2 "
+        r = d1("SELECT ticker, exercice, shares FROM comptes2 "
                "ORDER BY ticker, exercice LIMIT 5000 OFFSET ?", [page * 5000]
                )[0]["results"]
         if not r:
             break
         for l in r:
-            if l["ticker"] in vise:
-                comptes.setdefault(l["ticker"], {})[int(l["exercice"])] = l
+            if l["ticker"] in vise and l.get("shares"):
+                actions_der[l["ticker"]] = l["shares"]     # ordre croissant : le dernier gagne
         page += 1
 
     # ---- cotations, depuis les listes ---------------------------------------
@@ -471,32 +432,32 @@ def main():
     print(f"    dont {intl} hors des Etats-Unis")
 
     # ---- REPLI PAR TICKER, POUR CE QUE LES LISTES N'ONT PAS SERVI -----------
-    # La pagination ci-dessus repose sur une forme d'URL decouverte a
-    # l'execution. Le jour ou la source la changera, la decouverte echouera en
-    # silence et la couverture retombera — exactement la panne d'aujourd'hui.
-    # Ce repli la rend NON CRITIQUE : ce qui manque apres les listes est
-    # rattrape un par un chez Yahoo, source deja utilisee ailleurs dans ce
-    # script. Il ne se declenche que sur le manquant, donc il ne coute rien
-    # quand les listes font leur travail.
+    # Il ne se declenche que sur le manquant. COUPE-CIRCUIT : Yahoo refuse les
+    # adresses GitHub (429 immediat) ; sans lui, chaque manquant coutait trente
+    # secondes de reprises, et l'etendue des cibles a toutes les non-exclues
+    # aurait porte le passage a plusieurs heures.
     manquants = [t for t in cibles if t not in table]
     if manquants:
         print(f"  repli par ticker sur {len(manquants)} manquant(s)")
-        rattrapes = 0
+        rattrapes = echecs_suite = 0
         for i, t in enumerate(manquants):
             c = chart(t)
             if c:
                 table[t] = (c[0], None)   # capitalisation non servie par cette voie
                 rattrapes += 1
-            if i % 25 == 24:
-                time.sleep(1.0)
+                echecs_suite = 0
             else:
-                time.sleep(0.15)
-        print(f"  {rattrapes} rattrape(s), {len(manquants) - rattrapes} introuvable(s)")
+                echecs_suite += 1
+                if echecs_suite >= 10 and not rattrapes:
+                    print("  repli interrompu : dix echecs d'affilee, source refusee")
+                    s.compte("repli_interrompu")
+                    break
+            time.sleep(1.0 if i % 25 == 24 else 0.15)
+        print(f"  {rattrapes} rattrape(s)")
         s.compte("rattrapes_yahoo", rattrapes)
-    maj, refus_epv, echecs = [], 0, 0
-    cours_canari = (table.get(CANARI_TICKER) or (None,))[0]
 
-    perimes = []
+    maj, echecs, perimes = [], 0, []
+    cours_canari = (table.get(CANARI_TICKER) or (None,))[0]
     for t in cibles:
         px = table.get(t.upper())
         if not px or not px[0]:
@@ -505,150 +466,21 @@ def main():
             perimes.append(t)
             continue
         cours, capi_liste = px
-        annees = comptes.get(t) or {}
-        ans = sorted(annees)
-        if not ans:
-            continue
-        der = annees[ans[-1]]
-
-        # ---- CONTROLE D'UNITE SUR LE NOMBRE D'ACTIONS ------------------------
-        # Deux sources INDEPENDANTES mesurent la meme grandeur : la
-        # capitalisation publiee par la liste, et le produit cours x actions.
-        # Leur desaccord revele une erreur d'unite sans qu'on ait a connaitre
-        # la bonne unite — seul controle possible quand la taxonomie laisse
-        # chaque deposant libre de son echelle. McDonald's ressortait a
-        # 17 674 098 % d'EPV sur cours ; Booking a un rapport de 0,043.
-        actions = der.get("shares")
+        actions = actions_der.get(t)
+        # CONTROLE D'UNITE SUR LE NOMBRE D'ACTIONS — il ne sert plus qu'au
+        # repli de capitalisation : tous les ratios de prix se calculent
+        # desormais sur la capitalisation, a l'etage valorisation.
         if actions and capi_liste and cours:
             rapport = (cours * actions) / capi_liste
-            # Tolerance large : rachats et emissions depuis la cloture
-            # deplacent ce rapport de quelques dizaines de pour cent. Un
-            # facteur 5 n'est jamais une operation sur le capital.
             if rapport > 5 or rapport < 0.2:
-                s.erreur("unite_actions",
-                         f"{t} : cours x actions = {cours * actions:.3g} contre "
-                         f"capitalisation {capi_liste:.3g} (rapport {rapport:.3g})")
                 s.compte("actions_invalidees")
-                actions = None      # champ invalide, societe conservee
-
+                actions = None
         capi = capi_liste or (cours * actions if actions else None)
-
-        # PART DE TRESORERIE NETTE. EPV et EVA deduisent la MEME dette nette :
-        # une tresorerie massive gonfle les deux dans le meme sens, et leur
-        # accord ne prouve alors rien — Noah sortait a 284 % d'un cote, 257 %
-        # de l'autre. Mesurer ce que le cash represente dans le prix rend ce
-        # biais commun visible. Qu'il soit accessible — rapatriable,
-        # distribuable — est une question d'analyse, pas de calcul.
-        part_tres = None
-        if capi:
-            nette = (der.get("cash") or 0) - (der.get("debt") or 0)
-            part_tres = (nette / capi) if nette > 0 else 0.0
-        fcf_der = (der["cfo"] - abs(der["capex"])) \
-            if (der.get("cfo") is not None and der.get("capex") is not None) else None
-        fcf_y = (fcf_der / capi) if (fcf_der is not None and capi) else None
-
-        # ── TROISIEME REGARD : proxy du SEUIL N ─────────────────────────────
-        # Croissance requise au taux-obstacle PEA pour que le prix rapporte
-        # 10 % par an. Le cadre separe deux croissances et interdit de les
-        # fusionner : celle-ci est N, calculee au taux-obstacle — pas le point
-        # 2 de la note PRIX, calcule au WACC.
-        # EPV et EVA partagent le meme numerateur et la meme dette nette : leur
-        # accord etait en partie mecanique. Celle-ci est reellement
-        # independante — elle part du FCF et non du resultat d'exploitation,
-        # elle traite la tresorerie en sens INVERSE (le cash gonfle la
-        # capitalisation sans produire de flux, donc DURCIT le critere), et
-        # elle confronte le prix a la trajectoire reellement realisee.
-        # FCF median des trois derniers exercices : un capex exceptionnel ou
-        # un BFR favorable deformerait sinon tout le calcul.
-        fcfs = [annees[a]["cfo"] - abs(annees[a]["capex"]) for a in ans[-3:]
-                if annees[a].get("cfo") is not None
-                and annees[a].get("capex") is not None]
-        g_imp = None
-        r_obst = 0.10 if t in PEA else 0.115
-        if len(fcfs) >= 2 and capi:
-            fcf_med = st.median(fcfs)
-            if fcf_med > 0:
-                y = fcf_med / capi
-                # Prix = FCF x (1+g) / (r - g), resolu en g, au taux-obstacle
-                # de l'enveloppe : la croissance perpetuelle que le cours exige.
-                g_imp = 100 * (r_obst - y) / (1 + y)
-        g_dem = DEMONTRE.get(t)
-        # Le rendement FCF AFFICHE suit la meme mediane que le calcul. Trigano
-        # affichait 19,7 % sur le dernier exercice pour une croissance
-        # implicite calculee a +4,2 % sur la mediane : un exercice de
-        # destockage — du BFR libere une seule fois — faisait paraitre la
-        # societe trois fois et demie moins chere qu'elle ne l'est.
-        if len(fcfs) >= 2 and capi:
-            fcf_y = st.median(fcfs) / capi
-
-        epv = epv_sur_cours = None
-        ebits = [annees[a]["ebit"] for a in ans if annees[a].get("ebit") is not None]
-        taux = [annees[a]["tax"] / annees[a]["pretax"] for a in ans
-                if annees[a].get("tax") is not None
-                and (annees[a].get("pretax") or 0) > 0
-                and 0 <= annees[a]["tax"] / annees[a]["pretax"] <= 0.6]
-        # La CAPITALISATION suffit : le nombre d'actions ne conditionne plus
-        # le calcul, il ne sert qu'a publier une EPV par action en complement.
-        if len(ebits) >= EPV_MIN_EXERCICES and capi:
-            ebit_med = st.median(ebits)
-            t_med = st.median(taux) if taux else TAUX_IMPOT_DEFAUT
-            if ebit_med > 0:
-                capitalise = ebit_med * (1 - t_med) / TAUX_OBSTACLE_EPV
-                dn = (der.get("debt") or 0) - (der.get("cash") or 0)
-                if dn < capitalise:
-                    # Capitaux propres capitalises rapportes a la
-                    # capitalisation : le nombre d'actions disparait du
-                    # rapport, donc il ne peut plus le fausser. Resultat
-                    # identique au calcul par action quand les deux sont justes.
-                    epv_cp = capitalise - dn
-                    epv_sur_cours = epv_cp / capi
-                    epv = epv_cp / actions if actions else None
-                    # Vraisemblance : au-dela de 5x le cours, ce n'est plus
-                    # une decote, c'est une donnee fausse.
-                    if epv_sur_cours > 5:
-                        s.erreur("epv_invraisemblable",
-                                 f"{t} : EPV/cours = {epv_sur_cours:.3g}")
-                        s.compte("epv_invalidee")
-                        epv = epv_sur_cours = None
-                        refus_epv += 1
-                else:
-                    refus_epv += 1
-            else:
-                refus_epv += 1
-        else:
-            refus_epv += 1
-
-        per_cour = None
-        bpa = (der["netIncome"] / actions) \
-            if (der.get("netIncome") is not None and actions) else None
-        if bpa and bpa > 0:
-            per_cour = cours / bpa
-
-        # Seconde mesure, calculee par le noyau a l'etage metriques : on la
-        # rapporte au cours ici, ou la capitalisation est connue.
-        eva_sur_cours = None
-        if capi and EVA.get(t) is not None:
-            try:
-                eva_sur_cours = float(EVA[t]) / capi
-            except (TypeError, ValueError, ZeroDivisionError):
-                eva_sur_cours = None
-
-        # CONCORDANCE : la plus BASSE des deux mesures. Un dossier n'est
-        # retenu que si les deux voies pointent dans le meme sens ; retenir la
-        # plus haute reviendrait a choisir l'hypothese la plus flatteuse.
-        vals_c = [v for v in (epv_sur_cours, eva_sur_cours) if v is not None]
-        concordance = min(vals_c) if len(vals_c) == 2 else None
-
-        maj.append((t, cours, capi, epv, epv_sur_cours, fcf_y, per_cour,
-                    eva_sur_cours, concordance, part_tres, g_imp, g_dem,
-                    100 * r_obst))
+        maj.append((t, cours, capi))
 
     print(f"  {len(maj)} cotations exploitables, {echecs} echecs")
 
     # ---- canari -------------------------------------------------------------
-    # Seuil abaisse a 35 % : l'univers melange desormais des places dont la
-    # liste peut etre momentanement muette. Une couverture partielle n'est pas
-    # une panne de source — le detail par place, affiche plus haut, le dit.
     if a.tranche and CANARI_TICKER not in cibles:
         cours_canari = CANARI_COURS_MIN + 1   # le temoin n'est pas dans cette tranche
     if cours_canari is None or cours_canari < CANARI_COURS_MIN or \
@@ -660,80 +492,44 @@ def main():
         journal("PANNE", f"incr6_prix_t{a.tranche}", 0, "ROUGE", msg)
         sys.exit(1)
 
-    # ---- ecriture -----------------------------------------------------------
-    ecrites = 0
-    for t, cours, capi, epv, esc, fy, pc, pm, ec, pt, gi, gd, ro in maj:
-        d1("UPDATE metriques SET cours = ?, plancher_epv = ?, epv_sur_cours = ?, "
-           "fcf_yield = ?, per_courant = ?, eva_sur_cours = ?, concordance = ?, "
-           "part_tresorerie = ?, croissance_implicite = ?, "
-           "croissance_demontree = ?, taux_obstacle = ?, maj = ? WHERE ticker = ?",
-           [cours, epv, esc, fy, pc, pm, ec, pt, gi, gd, ro, RUN_TS, t])
-        d1("UPDATE societe SET capitalisation = ? WHERE ticker = ?", [capi, t])
-        ecrites += 1
-        if ecrites % 200 == 0 or ecrites == len(maj):
-            print(f"  ecrit {ecrites}/{len(maj)}")
+    # ---- ecriture, par lots (UPSERT : seules ces colonnes sont touchees) -----
+    s.phase("ecriture")
+    for i in range(0, len(maj), 30):
+        lot = maj[i:i + 30]
+        d1("INSERT INTO metriques (ticker, cours, maj_cours) VALUES "
+           + ", ".join("(?, ?, ?)" for _ in lot)
+           + " ON CONFLICT(ticker) DO UPDATE SET cours = excluded.cours, "
+             "maj_cours = excluded.maj_cours",
+           [x for t, c, _ in lot for x in (t, c, RUN_TS)])
+        lot_c = [(t, k) for t, _, k in lot if k]
+        if lot_c:
+            d1("INSERT INTO societe (ticker, capitalisation) VALUES "
+               + ", ".join("(?, ?)" for _ in lot_c)
+               + " ON CONFLICT(ticker) DO UPDATE SET capitalisation = excluded.capitalisation",
+               [x for t, k in lot_c for x in (t, k)])
+    ecrites = len(maj)
+    print(f"  ecrit {ecrites}")
 
     # ---- cours perimes -------------------------------------------------------
     # Une societe radiee gardait son dernier cours, et avec lui une decote qui
-    # n'existe plus : une candidate fantome. Ses ratios de PRIX sont effaces —
-    # jamais ses comptes ni son pouvoir beneficiaire. Garde : seulement si la
-    # liste de SA place a bien ete lue ce jour-la. Une liste muette pour une
-    # raison technique n'efface rien.
+    # n'existe plus. Garde : seulement si la liste de SA place a ete lue.
     places_lues = {("." + k.rsplit(".", 1)[1]) if "." in k else "" for k in table}
     purges = [t for t in perimes
               if (("." + t.rsplit(".", 1)[1]) if "." in t else "") in places_lues]
-    for t in purges:
+    for i in range(0, len(purges), 40):
+        lot = purges[i:i + 40]
         d1("UPDATE metriques SET cours = NULL, epv_sur_cours = NULL, "
            "eva_sur_cours = NULL, concordance = NULL, fcf_yield = NULL, "
-           "per_courant = NULL, part_tresorerie = NULL, "
-           "croissance_implicite = NULL, maj = ? WHERE ticker = ?", [RUN_TS, t])
+           "per_courant = NULL, part_tresorerie = NULL, croissance_implicite = NULL, "
+           "maj_cours = ? WHERE ticker IN (" + ", ".join("?" * len(lot)) + ")",
+           [RUN_TS] + lot)
     if purges:
         print(f"  {len(purges)} cours perime(s) efface(s) : {' '.join(purges[:8])}")
         s.compte("cours_perimes", len(purges))
 
-    # ---- rapport ------------------------------------------------------------
-    q = lambda s: d1(s)[0]["results"][0]["n"]
-    print("\n--- RAPPORT ---")
-    print(f"cotations ecrites      : {ecrites}")
-    print(f"refus de domaine EPV   : {refus_epv}")
-    print(f"EPV calculable         : {q('SELECT COUNT(*) AS n FROM metriques WHERE plancher_epv IS NOT NULL')}")
-    print(f"multiple median propre : {q('SELECT COUNT(*) AS n FROM metriques WHERE per_median IS NOT NULL')}")
-    print("\nentonnoir :")
-    print(f"  qualite (ROIC>=15, spread>0, CA et FCF en hausse) : "
-          f"{q('SELECT COUNT(*) AS n FROM metriques WHERE exclusion IS NULL AND roic_median >= 15 AND spread_median > 0 AND ca_cagr > 0 AND fcf_cagr > 0')}")
-    _b = ("exclusion IS NULL AND roic_median >= 15 AND spread_median > 0 "
-          "AND ca_cagr > 0 AND fcf_cagr > 0")
-    print(f"  + EPV calculable                                  : "
-          f"{q(f'SELECT COUNT(*) AS n FROM metriques WHERE {_b} AND epv_sur_cours IS NOT NULL')}")
-    print(f"  + plancher EPV >= 40 % du cours                   : "
-          f"{q(f'SELECT COUNT(*) AS n FROM metriques WHERE {_b} AND epv_sur_cours >= 0.4')}")
-    print(f"  + plancher EPV >= 60 % du cours                   : "
-          f"{q(f'SELECT COUNT(*) AS n FROM metriques WHERE {_b} AND epv_sur_cours >= 0.6')}")
-
-    # Meme ordre que le screener et Discord : le domaine de validite d'abord,
-    # la plus basse des deux mesures ensuite. Trier sur l'EPV seule remettait
-    # en tete les cas ou le calcul sort de son domaine.
-    print("\ndix premiers par concordance, domaine de validite d'abord :")
-    for l in d1(
-        "SELECT m.ticker, s.nom, m.roic_median, m.epv_sur_cours, m.eva_sur_cours, "
-        "m.concordance, m.croissance_implicite, m.croissance_demontree, "
-        "m.score_moat, m.score_moat_max FROM metriques m "
-        "JOIN societe s ON s.ticker = m.ticker "
-        "WHERE m.exclusion IS NULL AND m.roic_median >= 15 AND m.ca_cagr > 0 "
-        "AND m.fcf_cagr > 0 AND m.concordance IS NOT NULL "
-        "ORDER BY (m.concordance > 1.0) ASC, "
-        "CASE WHEN m.concordance <= 1.0 THEN m.concordance END DESC, "
-        "m.concordance ASC LIMIT 10")[0]["results"]:
-        gi, gd = l.get("croissance_implicite"), l.get("croissance_demontree")
-        cr = (f"exige {gi:+.1f} %/an, fait {gd:+.1f} %"
-              if gi is not None and gd is not None else "croissance n.c.")
-        print(f"  {l['ticker']:9} ROIC {round(l['roic_median'] or 0):3} %  "
-              f"EPV {round(100 * (l['epv_sur_cours'] or 0)):4} %  "
-              f"EVA {round(100 * (l['eva_sur_cours'] or 0)):4} %  "
-              f"{cr}  {(l['nom'] or '')[:24]}")
-
+    s.afficher()
     journal("OK", f"incr6_prix_t{a.tranche}", ecrites, "VERT",
-            f"{ecrites} cotations, {refus_epv} refus EPV, {echecs} echecs",
+            f"{ecrites} cotations, {echecs} sans cours",
             {"cibles": len(cibles), "ecrites": ecrites, "echecs": echecs})
     print("OK")
 

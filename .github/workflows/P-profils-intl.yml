@@ -1,0 +1,44 @@
+name: P profils internationaux
+# Siege, ISIN et eligibilite PEA lus sur le profil StockAnalysis ; cotations
+# secondaires reperees par ISIN (increment 12, audit C1). Quatre passages par
+# jour de 250 societes : l'univers est couvert en deux a trois jours, puis
+# chaque societe n'est relue qu'une fois par an.
+on:
+  schedule:
+    - cron: '37 1,7,13,19 * * *'
+  workflow_dispatch:
+    inputs:
+      sonder:
+        description: 'Un ticker pour verifier la lecture sans rien ecrire, ex SHELL.AS'
+        required: false
+        default: ''
+      lot:
+        description: 'Societes par passage'
+        required: false
+        default: '250'
+
+concurrency:
+  # Meme source que les comptes internationaux : jamais en meme temps.
+  group: screener-intl
+  cancel-in-progress: false
+
+jobs:
+  profils:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - name: Profils internationaux
+        env:
+          CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          PLAFOND_ECRITURES: "70000"
+          LOT_PROFIL: ${{ inputs.lot || 250 }}
+          SONDER: ${{ inputs.sonder }}
+          PYTHONUNBUFFERED: "1"
+        run: python src/incr12_profil_intl.py --sonder "$SONDER"

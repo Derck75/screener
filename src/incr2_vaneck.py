@@ -143,7 +143,11 @@ def vers_yahoo(bbg):
     if len(p) == 1:
         return p[0].replace("/", "-")
     suf = BBG_YAHOO.get(p[-1].upper())
-    base = "".join(p[:-1]).replace("/", "-")
+    # BARRE FINALE RETIREE (audit C1) : Bloomberg ecrit BAE Systems « BA/ LN »,
+    # Rolls-Royce « RR/ LN ». La barre devenait un tiret — « BA-.L » — ticker
+    # inexistant chez Yahoo comme chez StockAnalysis. Une barre INTERNE reste
+    # un tiret de classe d'action (« BF/B » -> « BF-B »).
+    base = "".join(p[:-1]).rstrip("/").replace("/", "-")
     return base + suf if suf else None
 
 
@@ -162,7 +166,7 @@ def code_pays(valeur):
 # --------------------------------------------------------------------------
 
 def main():
-    print(f"incr2_vaneck v5 — Run {RUN_TS}")
+    print(f"incr2_vaneck v6 — Run {RUN_TS}")
 
     # Reference : comptes par ETF du dernier run vert. Un effondrement se voit
     # au seuil plancher ; une DERIVE (page VanEck qui change de forme et sert
@@ -226,6 +230,28 @@ def main():
 
     print(f"\n{len(par_ticker)} societes distinctes apres dedoublonnage")
 
+    # COTATIONS SECONDAIRES (increment 12) : Bloomberg designe parfois une
+    # cotation que l'ISIN a classee secondaire (Stellantis a Milan plutot qu'a
+    # Paris). Le drapeau VanEck est reporte sur la cotation retenue ; sinon il
+    # restait sur une ligne sortie de la collecte, et la primaire se voyait
+    # journalisee SORTIE d'un indice qu'elle n'a jamais quitte.
+    try:
+        vers_primaire = {l["sec"]: l["prim"] for l in d1(
+            "SELECT s.ticker AS sec, p.ticker AS prim FROM societe s JOIN societe p "
+            "ON p.isin = s.isin AND p.ticker != s.ticker "
+            "AND instr(COALESCE(p.origine, ''), 'secondaire') = 0 "
+            "WHERE s.isin IS NOT NULL AND instr(COALESCE(s.origine, ''), 'secondaire') > 0"
+        )[0]["results"]}
+    except SystemExit:
+        vers_primaire = {}          # colonne isin absente : rien a reporter
+    reportees = 0
+    for sec, prim in vers_primaire.items():
+        if sec in par_ticker and prim not in par_ticker:
+            par_ticker[prim] = par_ticker.pop(sec)
+            reportees += 1
+    if reportees:
+        print(f"  {reportees} ligne(s) VanEck reportee(s) sur leur cotation primaire")
+
     # Preparation des lignes
     rangs = []
     for t, e in par_ticker.items():
@@ -264,6 +290,12 @@ def main():
         ecrites += 1
         if ecrites % 50 == 0 or ecrites == len(rangs):
             print(f"  ecrit {ecrites}/{len(rangs)}")
+
+    # Anciens tickers a barre finale (« BA-.L ») : ils seraient journalises
+    # comme SORTIS de l'indice alors que la societe y est toujours, sous son
+    # vrai ticker. Retires une fois pour toutes (idempotent).
+    for table in ("comptes2", "metriques", "societe"):
+        d1(f"DELETE FROM {table} WHERE ticker LIKE '%-.%'")
 
     # Sorties d'indice : journalisees, jamais effacees.
     res = d1("UPDATE societe SET vaneck_sorti_le = ? "

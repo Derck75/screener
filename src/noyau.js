@@ -1,17 +1,19 @@
 /* ════════════════════════════════════════════════════════════════════════
    NOYAU — fonctions de calcul PURES, extraites du worker sans modification.
 
-   NE PAS EDITER A LA MAIN. Genere depuis le worker. Toute correction se fait
-   dans le worker, puis on regenere : c'est ce qui garantit qu'il n'existe
-   QU'UNE definition du ROIC, du capital investi, de la dette et du profil de
-   societe. Deux definitions produiraient des candidats sortis par le screener
-   qui echouent a l'analyse.
+   NE PAS EDITER A LA MAIN. Genere par outils/generer_noyau.mjs : toute
+   correction se fait dans le worker, puis on regenere. C'est ce qui garantit
+   qu'il n'existe QU'UNE definition du ROIC, du capital investi, de la dette,
+   de l'EPV, du profil de societe et du moteur DCF deux phases.
 
-   Aucune de ces fonctions n'appelle fetch, KV, env ni await.
+   Aucune de ces fonctions n'appelle fetch, KV, env ni await (verifie a la
+   generation).
 
-   Source : worker-160.js
+   Source : worker.js — worker w178 — empreinte 006da49214b8
+   24 declarations, dont 19 exportees.
    ════════════════════════════════════════════════════════════════════════ */
 
+export const NOYAU_SOURCE = {"worker":"w178","empreinte":"006da49214b8"};
 
 const TERMINAL_G = 0.025;
 
@@ -606,9 +608,37 @@ function profilSociete(der, opt) {
     ? der.roicFinMedian / der.roicMedian : null;
   const intensite = (Number.isFinite(CI) && ca) ? CI / ca : null;
   if (R.brut) o.notes.push("Capital employé BRUT retenu (trésorerie non déduite) : les deux dénominateurs usuels étaient écrasés par un financement client ou par une trésorerie supérieure aux fonds propres. Le ROIC obtenu est volontairement minoré plutôt qu'inexploitable.");
+  /* w178 — « FLOAT » ET « DONNÉES ABSENTES » NE SONT PLUS CONFONDUS (audit C4).
+     `CI` vaut null dans deux situations opposées : les dénominateurs existent
+     et sont nuls, négatifs ou minces — la vraie société financée par son
+     cycle — ou ils n'existent pas, faute d'un poste de bilan ou d'un résultat
+     d'exploitation servi par la source. Le second cas recevait le diagnostic
+     du premier : 1 289 sociétés du screener « financées par leur cycle
+     d'exploitation », dont Deere, PACCAR, D.R. Horton et Lennar, toutes à
+     série de ROIC VIDE. Un faux diagnostic envoie chercher un modèle
+     économique là où il manque une ligne. Le type `incomplet` nomme le poste
+     manquant et renvoie vers `seed`. */
   if (!Number.isFinite(CI) || CI <= 0) {
-    o.type = "float"; o.evaOK = false;
-    o.ko = "capital investi nul ou négatif sur les deux dénominateurs — société financée par son cycle d'exploitation (encaissements clients d'avance) ou par sa trésorerie. Le rendement du capital n'y a pas de sens : la brique EVA ne s'applique pas, la brique multiple prend l'ancrage";
+    const brutD = (Number.isFinite(l.dette) && Number.isFinite(l.equity)) ? l.dette + l.equity : null;
+    const connus = [l.ci, l.ciFin, l.ciExp, brutD].filter(Number.isFinite);
+    const negatifsOuMinces = connus.length > 0 && connus.every(x => x <= 0 || (ca && x / ca < 0.10));
+    if (Number.isFinite(CI) || negatifsOuMinces) {
+      o.type = "float"; o.evaOK = false;
+      o.ko = "capital investi nul ou négatif sur les deux dénominateurs — société financée par son cycle d'exploitation (encaissements clients d'avance) ou par sa trésorerie. Le rendement du capital n'y a pas de sens : la brique EVA ne s'applique pas, la brique multiple prend l'ancrage";
+      return o;
+    }
+    const manque = [];
+    if (!Number.isFinite(l.dette)) manque.push("dette");
+    if (!Number.isFinite(l.equity)) manque.push("capitaux propres");
+    if (!Number.isFinite(l.ci)) manque.push("actif, passif courant ou trésorerie");
+    if (!Number.isFinite(l.nopat)) manque.push("résultat d'exploitation ou impôt");
+    if (!manque.length && der.annees.length < 4) {
+      o.type = "fenetre_courte"; o.evaOK = false;
+      o.ko = `${der.annees.length} exercice(s) seulement dans la série. La brique EVA extrapole vingt ans : sous quatre exercices le rapport entre ce qu'on observe et ce qu'on affirme dépasse 1 pour 7, et la médiane de ROIC n'a pas de sens. Chercher un \`seed\` du rapport annuel avant tout ancrage intrinsèque`;
+      return o;
+    }
+    o.type = "incomplet"; o.evaOK = false;
+    o.ko = `données insuffisantes pour mesurer le capital investi — ${manque.length ? manque.join(", ") + " absent(s) au dernier exercice" : "série de ROIC trop courte (moins de 3 exercices calculables)"}. Ce n'est pas un diagnostic de modèle économique mais un poste que la source ne sert pas : \`seed\` depuis le rapport annuel, ou une source plus profonde, avant tout ancrage intrinsèque`;
     return o;
   }
 
@@ -644,7 +674,7 @@ function profilSociete(der, opt) {
     o.notes.push(`Trésorerie nette de ${millions(-l.dn)}, soit ${pct(Math.abs(l.dn) / CI)} du capital investi.`
       + (fl !== null && Number.isFinite(tr)
         ? ` Flottant client saisi : ${millions(fl)} sur ${millions(tr)} de trésorerie — ${fl >= tr ? "la totalité de cette trésorerie est de l'argent de tiers, RIEN n'est ajoutable à la valeur des actionnaires" : "seul l'excédent de " + millions(tr - fl) + " appartient aux actionnaires et entre dans la valeur"}.`
-        : ` ⚠️ FLOTTANT CLIENT NON SAISI : avant de lire cette trésorerie comme une réserve d'actionnaires, vérifier qu'elle n'est pas de l'argent encaissé d'avance pour le compte de clients ou de mandants. Sur une billetterie, un voyagiste, un assureur ou un intermédiaire de paiement, elle ne l'est pas.`)
+        : ` ⚠️ FLOTTANT CLIENT NON SAISI : avant de lire cette trésorerie comme une réserve d'actionnaires, vérifier qu'elle n'est pas de l'argent encaissé d'avance pour le compte de clients ou de mandants — c'est le cas des modèles qui encaissent avant de livrer (billetterie, voyage, assurance, paiement) ; ailleurs, la question se tranche en une ligne du rapport annuel.`)
       + ` La part réellement ajoutée à la valeur dépend de la base de capital investi retenue, et elle est publiée avec la brique EVA.`);
   }
 
@@ -1150,6 +1180,61 @@ function ancrageEPV(der, px) {
       : `${(o.partCroissance * 100).toFixed(0)} % du cours repose sur une croissance NON ENCORE RÉALISÉE — le pouvoir bénéficiaire actuel, capitalisé à ${(EPV_TAUX_OBSTACLE * 100).toFixed(0)} %, en justifie ${(100 - o.partCroissance * 100).toFixed(0)} %.`;
   }
   return o;
+}
+
+function valeurBPA(eps0, g, ke, multiple, annees) {
+  // Les flux BPA sont des flux ACTIONNAIRES : ils s'actualisent au coût des
+  // fonds propres, pas au WACC (les intérêts sont déjà déduits), et aucune
+  // dette nette ne se soustrait ensuite. Le terminal se pose par le MULTIPLE
+  // MÉDIAN DU TITRE, jamais par une croissance perpétuelle de Gordon.
+  if (!(ke > 0) || !(multiple > 0)) return null;
+  let vp = 0, e = eps0;
+  for (let t = 1; t <= annees; t++) { e = e * (1 + g); vp += e / Math.pow(1 + ke, t); }
+  return vp + (e * multiple) / Math.pow(1 + ke, annees);
+}
+
+function croissanceImpliciteBPA(cible, eps0, ke, multiple, annees) {
+  if (!(eps0 > 0) || !(cible > 0)) return null;
+  let bas = -0.30, haut = 0.60;
+  const vBas = valeurBPA(eps0, bas, ke, multiple, annees);
+  const vHaut = valeurBPA(eps0, haut, ke, multiple, annees);
+  if (vBas === null || vHaut === null) return null;
+  if (cible < vBas) return { g: bas, horsBornes: "sous -30%" };
+  if (cible > vHaut) return { g: haut, horsBornes: "au-dessus de +60%" };
+  for (let i = 0; i < 200; i++) {
+    const m = (bas + haut) / 2;
+    const v = valeurBPA(eps0, m, ke, multiple, annees);
+    if (v === null) return null;
+    if (v < cible) bas = m; else haut = m;
+  }
+  return { g: (bas + haut) / 2, horsBornes: null };
+}
+
+function valeurDCF(fcf0, g, wacc, gt, annees) {
+  // Deux étages : croissance explicite sur `annees`, puis perpétuité à gt.
+  if (!(wacc > gt)) return null;
+  let vp = 0, f = fcf0;
+  for (let t = 1; t <= annees; t++) { f = f * (1 + g); vp += f / Math.pow(1 + wacc, t); }
+  const vt = f * (1 + gt) / (wacc - gt);
+  return vp + vt / Math.pow(1 + wacc, annees);
+}
+
+function croissanceImplicite(cible, fcf0, wacc, gt, annees) {
+  // Bissection : on cherche g tel que la valeur actualisée égale la cible.
+  if (!(fcf0 > 0) || !(cible > 0)) return null;
+  let bas = -0.30, haut = 0.60;
+  const vBas = valeurDCF(fcf0, bas, wacc, gt, annees);
+  const vHaut = valeurDCF(fcf0, haut, wacc, gt, annees);
+  if (vBas === null || vHaut === null) return null;
+  if (cible < vBas) return { g: bas, horsBornes: "sous -30%" };
+  if (cible > vHaut) return { g: haut, horsBornes: "au-dessus de +60%" };
+  for (let i = 0; i < 200; i++) {
+    const m = (bas + haut) / 2;
+    const v = valeurDCF(fcf0, m, wacc, gt, annees);
+    if (v === null) return null;
+    if (v < cible) bas = m; else haut = m;
+  }
+  return { g: (bas + haut) / 2, horsBornes: null };
 }
 
 function preuvesMoat(der) {
@@ -1714,7 +1799,4 @@ function derives(series, devise) {
   return d;
 }
 
-
-export { derives, roicRetenu, profilSociete, moatPropre, preuvesMoat,
-         ancrageEPV, ancrageEVA, trajectoireROIC,
-         mediane, cagr, pct, num, millions };
+export { derives, roicRetenu, profilSociete, moatPropre, preuvesMoat, ancrageEPV, ancrageEVA, trajectoireROIC, valeurDCF, croissanceImplicite, valeurBPA, croissanceImpliciteBPA, mediane, cagr, pct, num, millions, TERMINAL_G, EPV_TAUX_OBSTACLE };

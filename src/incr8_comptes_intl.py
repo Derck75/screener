@@ -31,17 +31,16 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from commun import (d1, journal, sonde, budget, ecrire_differentiel,  # noqa: E402
                     migrer, RUN_TS)
+from places import SA_CODE, suffixe, symbole_sa  # noqa: E402
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
-# suffixe Yahoo -> code de place StockAnalysis
-PLACE = {".PA": "epa", ".AS": "ams", ".BR": "ebr", ".LS": "els", ".IR": "dub",
-         ".DE": "etr", ".MI": "mil", ".MC": "bme", ".VI": "vie", ".AT": "ath",
-         ".ST": "sto", ".CO": "cph", ".HE": "hel", ".OL": "osl", ".IC": "ice",
-         ".WA": "war", ".PR": "pra", ".BD": "bud", ".L": "lon", ".SW": "swx",
-         ".T": "tyo",
-         ".KS": "kos", ".TW": "twn", ".TO": "tor"}
+# suffixe Yahoo -> code de place StockAnalysis : table UNIQUE dans places.py.
+# La copie locale se trompait sur sept places (Milan, Lisbonne, Dublin,
+# Varsovie, Seoul, Taipei, Toronto) : 404 sur chaque page, puis societe
+# marquee « sans page » pour toujours.
+PLACE = SA_CODE
 
 # Le compte de resultat rendait zero poste sur MC.PA comme sur ASML.AS, alors
 # que bilan et flux fonctionnaient. Plusieurs chemins sont donc essayes et le
@@ -120,6 +119,15 @@ PAUSE = float(os.environ.get("PAUSE_SA", "1.0"))
 
 
 def lire(url, s=None):
+    """Rend le HTML, ou None. Voir `lire_code` pour le statut."""
+    return lire_code(url, s)[0]
+
+
+def lire_code(url, s=None):
+    """Rend (html, statut) — statut 200, 404, un autre code HTTP, ou
+    « reseau ». C'est le STATUT qui decide du marquage « sans page » : seul un
+    404 dit que la source ne publie rien ; un 429, un 5xx ou une coupure ne
+    disent rien de la societe."""
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     # REPRISE SUR 429. Trois pages par societe a 0,35 s frappaient la source a
     # plus de deux requetes par seconde : 270 refus sur une tranche de 150, et
@@ -128,7 +136,7 @@ def lire(url, s=None):
     for essai in range(3):
         try:
             with urllib.request.urlopen(req, timeout=40) as r:
-                return r.read().decode("utf-8", "replace")
+                return r.read().decode("utf-8", "replace"), 200
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 if s:
@@ -137,14 +145,14 @@ def lire(url, s=None):
                 continue
             if s and e.code != 404:
                 s.erreur(f"http_{e.code}", url[-50:])
-            return None
+            return None, e.code
         except Exception as e:
             if s:
                 s.erreur("reseau_sa", f"{type(e).__name__} {url[-40:]}")
-            return None
+            return None, "reseau"
     if s:
         s.erreur("http_429_abandon", url[-50:])
-    return None
+    return None, 429
 
 
 def norm(t):
@@ -193,12 +201,31 @@ def nombre(t):
     return -v if neg else v
 
 
+_ECHELLE = re.compile(r"Financials in (thousands|millions|billions)?\s*([A-Z]{3})\b")
+FACTEUR = {"thousands": 1e3, "millions": 1e6, "billions": 1e9, None: 1.0}
+
+
+def echelle(html):
+    """Rend (facteur, devise des comptes) lus sur la page — « Financials in
+    millions USD ». La DEVISE DES COMPTES n'est pas celle de la cotation :
+    Equinor publie en dollars et cote en couronnes, Shell publie en dollars
+    et cote en euros a Amsterdam. Rapporter un flux en dollars a une
+    capitalisation en couronnes faussait tout ratio de prix d'un facteur dix.
+    Absente de la page : (1e6, None), le comportement historique."""
+    m = _ECHELLE.search(re.sub(r"<[^>]+>", " ", html or ""))
+    if not m:
+        return 1e6, None
+    return FACTEUR.get(m.group(1), 1e6), m.group(2)
+
+
 def extraire(html, page=None):
-    """Rend {poste: {annee: valeur}}. Les montants sont en MILLIONS chez
-    StockAnalysis, sauf le nombre d'actions : remis en unites ici, sans quoi
-    le noyau comparerait des grandeurs de deux ordres differents."""
+    """Rend {poste: {annee: valeur}}. Les montants sont a l'ECHELLE annoncee
+    par la page (millions le plus souvent), nombre d'actions compris : remis
+    en unites ici, sans quoi le noyau comparerait des grandeurs de deux
+    ordres differents."""
     if not html:
         return {}
+    facteur = echelle(html)[0]
     entetes = re.findall(r"<th[^>]*>(.*?)</th>", html, re.S)
     annees = []
     for h in entetes:
@@ -235,7 +262,7 @@ def extraire(html, page=None):
             # attend une valeur positive, comme pour les deposants SEC.
             if poste == "capex":
                 v = abs(v)
-            out.setdefault(poste, {})[annees[i]] = v * 1e6
+            out.setdefault(poste, {})[annees[i]] = v * facteur
     return out
 
 
@@ -249,11 +276,10 @@ def main():
     a = ap.parse_args()
 
     s = sonde(f"incr8_comptes_intl_t{a.tranche}")
-    print(f"incr8_comptes_intl v7 — Run {RUN_TS}")
+    print(f"incr8_comptes_intl v8 — Run {RUN_TS}")
 
     if a.sonder:
-        suf = "." + a.sonder.split(".")[-1] if "." in a.sonder else ""
-        code, sym = PLACE.get(suf), a.sonder.split(".")[0].replace("-", ".")
+        code, sym = PLACE.get(suffixe(a.sonder)), symbole_sa(a.sonder)
         if not code:
             print(f"place inconnue pour {a.sonder}")
             sys.exit(1)
@@ -272,7 +298,7 @@ def main():
             d = extraire(html, nom)
             print(f"\n  --- {nom} ---")
             print(f"  URL    : {url}")
-            print(f"  servi  : {len(html) if html else 0} caracteres")
+            print(f"  servi  : {len(html) if html else 0} caracteres · echelle {echelle(html)}")
             print(f"  postes : {len(d)} — {', '.join(sorted(d)) or '(aucun)'}")
             if html:
                 # Libelles de premiere colonne, reconnus ou non. C'est la seule
@@ -317,6 +343,7 @@ def main():
     # auraient garde leurs comptes de l'annee precedente. Chaque lecture est
     # desormais datee, et une societe redevient une cible trente jours plus
     # tard : de quoi capter un nouvel exercice dans le mois de sa publication.
+    migrer("societe", {"devise_comptes": "TEXT"})
     if "comptes_maj" in migrer("societe", {"comptes_maj": "TEXT"}):
         # Premiere mise en service : les comptes deja presents sont dates de
         # facon ETALEE sur trente jours, pour que leurs relectures ne tombent
@@ -329,11 +356,31 @@ def main():
     # correction idempotente, qui ne touche plus rien une fois faite.
     d1("UPDATE societe SET nom = REPLACE(nom, '&amp;', '&') WHERE nom LIKE '%&amp;%'")
 
-    # `sans_sa` : societes dont la source ne publie aucune page — cotations
-    # secondaires pour l'essentiel. Les reinterroger coute trois requetes par
-    # tranche sans jamais rien rendre.
-    W = ("s.origine LIKE '%intl%' AND s.cik IS NULL "
-         "AND instr(COALESCE(s.origine, ''), 'sans_sa') = 0")
+    # « SANS PAGE » DATE ET MOTIVE (audit C1). L'ancien marqueur `sans_sa`,
+    # ecrit dans `origine`, etait DEFINITIF et posé sur tout echec : sept places
+    # mal codees (Milan, Lisbonne, Dublin, Varsovie, Seoul, Taipei, Toronto)
+    # l'ont pose sur des centaines de societes parfaitement servies. Il est
+    # remplace par une date et un motif, et s'efface a la premiere lecture
+    # reussie :
+    #   « 404 »          les trois pages absentes — retente apres 30 jours ;
+    #   « sans_revenue » pages servies mais aucun CA reconnu — 30 jours ;
+    #   « incident »     429, 5xx, coupure — retente apres 2 jours.
+    if "sans_sa_le" in migrer("societe", {"sans_sa_le": "TEXT", "sans_sa_motif": "TEXT"}):
+        r = d1("UPDATE societe SET origine = REPLACE(REPLACE(origine, ',sans_sa', ''), 'sans_sa', '') "
+               "WHERE instr(COALESCE(origine, ''), 'sans_sa') > 0")
+        n0 = r[0].get("meta", {}).get("changes", 0)
+        print(f"  {n0} marques « sans_sa » definitives effacees : ces societes sont retentees")
+        s.compte("sans_sa_reinitialisees", n0)
+    # LIGNES VANECK INTERNATIONALES (audit C1) : inscrites par l'increment 2
+    # avec l'origine « vaneck » seule, elles n'etaient jamais ciblees ici — donc
+    # jamais de comptes, alors que ce sont les seules deja passees par un filtre
+    # de moat. Une ligne est internationale si son ticker porte un suffixe.
+    # Les cotations secondaires reperees par ISIN (increment 12) sont exclues.
+    W = ("s.cik IS NULL "
+         "AND (s.origine LIKE '%intl%' OR (s.origine LIKE '%vaneck%' AND instr(s.ticker, '.') > 0)) "
+         "AND instr(COALESCE(s.origine, ''), 'secondaire') = 0 "
+         "AND (s.sans_sa_le IS NULL OR s.sans_sa_le < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', "
+         "CASE WHEN s.sans_sa_motif = 'incident' THEN '-2 days' ELSE '-30 days' END))")
     if a.places:
         suf = [p.strip() for p in a.places.split(",") if p.strip()]
         W += " AND (" + " OR ".join("s.ticker LIKE ?" for _ in suf) + ")"
@@ -351,6 +398,14 @@ def main():
         f"FROM societe s WHERE {W} "
         f"ORDER BY (n > 0) ASC, s.comptes_maj ASC, s.capitalisation DESC",
         params)[0]["results"]]
+    # Places sans code StockAnalysis (Shanghai, Shenzhen, Sao Paulo pour
+    # VanEck) : ecartees AVANT la tranche, sinon elles occuperaient la tete de
+    # la file a chaque passage sans jamais rien rendre.
+    hors = [t for t in cibles if suffixe(t) not in PLACE]
+    if hors:
+        s.compte("place_non_prise_en_charge", len(hors))
+        print(f"  {len(hors)} societes sur une place sans code StockAnalysis — ignorees")
+    cibles = [t for t in cibles if suffixe(t) in PLACE]
     total_file = len(cibles)
     if a.tranche:
         # Tranche explicite : comportement d'origine, utile pour rejouer.
@@ -367,26 +422,32 @@ def main():
         return
 
     s.phase("collecte")
-    rangs, sans_page, lues = {}, [], []
+    rangs, sans_page, lues, devises = {}, [], [], {}
     for i, t in enumerate(cibles, 1):
-        suf = "." + t.split(".")[-1]
-        code, sym = PLACE.get(suf), t.split(".")[0].replace("-", ".")
-        if not code:
-            s.erreur("place_inconnue", t)
-            continue
-        total = {}
+        code, sym = PLACE.get(suffixe(t)), symbole_sa(t)
+        total, statuts, dev_c = {}, [], None
         for chemin in PAGES:
-            d = extraire(lire(f"https://stockanalysis.com/quote/{code}/{sym}/financials/{chemin}", s),
-                         PAGES[chemin])
+            html, st = lire_code(f"https://stockanalysis.com/quote/{code}/{sym}/financials/{chemin}", s)
+            statuts.append(st)
+            dev_c = dev_c or echelle(html)[1]
+            d = extraire(html, PAGES[chemin])
             for k, v in d.items():
                 total.setdefault(k, {}).update(v)
             time.sleep(PAUSE)
         if not total.get("revenue"):
-            s.erreur("sans_revenue", t)
-            sans_page.append(t)
+            if all(x == 404 for x in statuts):
+                motif = "404"
+            elif all(x in (200, 404) for x in statuts):
+                motif = "sans_revenue"
+            else:
+                motif = "incident"
+            s.compte("sans_page_" + motif)
+            sans_page.append((t, motif))
             continue
         s.compte("societes_lues")
         lues.append(t)
+        if dev_c:
+            devises[t] = dev_c
         for annee in sorted({x for v in total.values() for x in v}):
             ligne = {c: total.get(c, {}).get(annee) for c in COLONNES}
             if ligne["revenue"] is None and ligne["ebit"] is None:
@@ -433,22 +494,35 @@ def main():
     # trouve a ecrire : c'est la LECTURE qui remet le compteur a zero.
     for i in range(0, len(lues), 20):
         lot = lues[i:i + 20]
-        d1("UPDATE societe SET comptes_maj = ? WHERE ticker IN ("
+        d1("UPDATE societe SET comptes_maj = ?, sans_sa_le = NULL, sans_sa_motif = NULL "
+           "WHERE ticker IN ("
            + ", ".join("?" * len(lot)) + ")", [RUN_TS] + lot,
            lignes=len(lot), table="societe")
 
-    # Le marquage passe par `origine`, deja porteur de la provenance : aucune
-    # colonne nouvelle, et la requete de cibles les ecarte au tour suivant.
+    # Devise des comptes, par lots de meme devise.
+    par_dev = {}
+    for t, dv in devises.items():
+        par_dev.setdefault(dv, []).append(t)
+    for dv, liste in par_dev.items():
+        for i in range(0, len(liste), 20):
+            lot = liste[i:i + 20]
+            d1("UPDATE societe SET devise_comptes = ? WHERE ticker IN ("
+               + ", ".join("?" * len(lot)) + ")", [dv] + lot, lignes=len(lot), table="societe")
+
+    # Marquage DATE et MOTIVE : la requete de cibles les ecarte 30 jours
+    # (2 jours sur incident), puis les retente.
     if sans_page:
         s.phase("marquage")
-        print(f"  {len(sans_page)} societes sans page — marquees pour ne plus "
-              f"etre interrogees")
-        for i in range(0, len(sans_page), 20):
-            lot = sans_page[i:i + 20]
-            d1("UPDATE societe SET origine = COALESCE(origine, '') || ',sans_sa' "
-               "WHERE ticker IN (" + ", ".join("?" * len(lot)) + ") "
-               "AND (origine IS NULL OR instr(origine, 'sans_sa') = 0)",
-               lot, lignes=len(lot), table="societe")
+        par_motif = {}
+        for t, m in sans_page:
+            par_motif.setdefault(m, []).append(t)
+        print("  sans page : " + ", ".join(f"{m} {len(v)}" for m, v in par_motif.items()))
+        for m, liste in par_motif.items():
+            for i in range(0, len(liste), 20):
+                lot = liste[i:i + 20]
+                d1("UPDATE societe SET sans_sa_le = ?, sans_sa_motif = ? WHERE ticker IN ("
+                   + ", ".join("?" * len(lot)) + ")", [RUN_TS, m] + lot,
+                   lignes=len(lot), table="societe")
         s.compte("marquees_sans_page", len(sans_page))
 
     reste = d1(f"SELECT COUNT(*) AS n FROM societe s WHERE {W} "

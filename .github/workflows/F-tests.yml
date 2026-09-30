@@ -1,9 +1,13 @@
 name: F tests noyau
 on:
   workflow_dispatch:
+  # Sur chaque demande de fusion : une branche rouge ne se fusionne pas.
+  pull_request:
   push:
     paths:
       - 'src/**'
+      - 'tests/**'
+      - 'outils/**'
 
 jobs:
   tests:
@@ -28,7 +32,9 @@ jobs:
       # litteraux d'expression reguliere porteurs de backticks, que son propre
       # analyseur textuel lit comme des gabarits. Limite connue et assumee.
       - name: Noms non definis dans les scripts JS
-        run: cd src && node verif_noms_js.mjs incr5_metriques.mjs
+        # lourd/lourd.mjs en est exclu : classes et gabarits en commentaire
+        # trompent cet analyseur textuel (faux positifs) ; il a son banc.
+        run: cd src && node verif_noms_js.mjs incr5_metriques.mjs incr7_valorisation.mjs
 
       # Imprime l'empreinte REELLE de chaque fichier deploye. C'est ce qui
       # permet de repondre a « est-ce bien la version corrigee qui tourne ? »
@@ -38,3 +44,19 @@ jobs:
 
       - name: Non-regression du noyau
         run: node src/test_noyau.mjs
+
+      - run: pip install requests
+
+      - name: Non-regression des places et des profils
+        run: python src/test_places.py
+
+      # Chaine metriques -> valorisation sur une base D1 emulee (node:sqlite) :
+      # SPAC, « incomplet », cyclique, moat propre, seuil N, devises.
+      - name: Chaine metriques et valorisation
+        run: node --no-warnings tests/test_chaine.mjs
+
+      - name: Univers, comptes internationaux et Discord (hors reseau)
+        run: |
+          python tests/test_univers.py
+          python tests/test_incr8.py
+          python tests/test_discord.py
