@@ -34,7 +34,7 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from commun import d1, journal, sonde, budget, RUN_TS  # noqa: E402
+from commun import d1, journal, sonde, budget, migrer, RUN_TS  # noqa: E402
 
 SEC_UA = os.environ.get("SEC_UA", "screener-perso contact@example.com")
 SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik}.json"
@@ -111,6 +111,12 @@ def siege(cik, s):
         return None, type(e).__name__, None
 
     sic = (j.get("sicDescription") or "").strip()
+    # Code SIC NUMERIQUE conserve a cote du libelle (audit C4) : il identifie
+    # sans ambiguite les SPAC (6770) et les fonds cotes, que l'etage metriques
+    # sort de l'univers au lieu de les classer « float ».
+    code_sic = str(j.get("sic") or "").strip() or "--"   # « -- » : lu, absent
+    if s:
+        s.sic_courant = code_sic
     # CHAINE DE REPLI. Les emetteurs etrangers qui deposent un 20-F laissent
     # souvent l'adresse d'etablissement vide : Criteo, Vipshop, Yalla et Noah
     # ressortaient « -- », c'est-a-dire precisement les societes que ce script
@@ -170,21 +176,25 @@ def main():
                          "rattraper le secteur")
     a = ap.parse_args()
     s = sonde("incr9_siege")
-    print(f"incr9_siege v6 — Run {RUN_TS}")
+    print(f"incr9_siege v7 — Run {RUN_TS}")
 
     s.phase("cibles")
     # Seules les societes analysables et jamais resolues. `source_eligibilite`
     # sert de marqueur : une fois renseignee par ce script, la societe n'est
     # plus reinterrogee.
+    # TOUS LES DEPOSANTS, plus seulement les analysables (audit C4) : c'est le
+    # code SIC qui permet d'exclure SPAC et fonds cotes, et ceux-la etaient
+    # justement hors des analysables — classes « float » faute de donnees.
+    migrer("societe", {"sic": "TEXT"})
     cibles = d1(
         "SELECT s.ticker, s.cik FROM societe s "
-        "JOIN metriques m ON m.ticker = s.ticker "
-        "WHERE s.cik IS NOT NULL AND m.exclusion IS NULL "
-        + ("AND (s.secteur IS NULL OR s.secteur = '') "
+        "LEFT JOIN metriques m ON m.ticker = s.ticker "
+        "WHERE s.cik IS NOT NULL "
+        + ("AND (s.secteur IS NULL OR s.secteur = '' OR s.sic IS NULL) "
            if a.rejouer else
-           "AND (s.source_eligibilite IS NULL "
+           "AND (s.source_eligibilite IS NULL OR s.sic IS NULL "
            "OR s.source_eligibilite NOT LIKE 'siege SEC%' OR s.pays_siege = '--') ")
-        + "ORDER BY m.roic_median DESC LIMIT ?", [LOT])[0]["results"]
+        + "ORDER BY (m.exclusion IS NULL) DESC, m.roic_median DESC LIMIT ?", [LOT])[0]["results"]
     print(f"  {len(cibles)} societes a resoudre (lot de {LOT})")
     if not cibles:
         print("  toutes resolues — rien a faire")
@@ -194,6 +204,7 @@ def main():
     s.phase("interrogation")
     maj, etrangeres = [], 0
     for i, l in enumerate(cibles, 1):
+        s.sic_courant = None
         code, lib, act = siege(l["cik"], s)
         time.sleep(0.15)          # SEC : 10 requetes par seconde maximum
         if code is None:
@@ -201,7 +212,7 @@ def main():
         if code not in ("US", "--"):
             etrangeres += 1
             s.compte("etranger_" + code)
-        maj.append((l["ticker"], code, lib, act))
+        maj.append((l["ticker"], code, lib, act, s.sic_courant))
         if i % 200 == 0:
             print(f"  {i}/{len(cibles)} — {etrangeres} sieges hors US")
 
@@ -210,7 +221,7 @@ def main():
     s.phase("canari")
     # Temoin : Apple doit ressortir en Californie. Si le champ lu n'est plus
     # celui qu'on croit, ce controle le dit avant d'ecrire 1 200 lignes.
-    temoin = next((c for t, c, _, _ in maj if t == "AAPL"), None)
+    temoin = next((c for t, c, _, _, _ in maj if t == "AAPL"), None)
     if temoin is not None and temoin != "US":
         msg = f"canari rouge : AAPL siege = {temoin}"
         print("PANNE : " + msg)
@@ -224,14 +235,15 @@ def main():
     for i in range(0, len(maj), 10):
         lot = maj[i:i + 10]
         vals, params = [], []
-        for t, code, lib, act in lot:
-            vals.append("(?, ?, ?, ?, ?)")
-            params += [t, code, f"siege SEC : {lib[:60]}", (act or "")[:70], RUN_TS]
+        for t, code, lib, act, sic in lot:
+            vals.append("(?, ?, ?, ?, ?, ?)")
+            params += [t, code, f"siege SEC : {lib[:60]}", (act or "")[:70], sic, RUN_TS]
         d1("INSERT INTO societe (ticker, pays_siege, source_eligibilite, "
-           "secteur, maj) VALUES " + ", ".join(vals) +
+           "secteur, sic, maj) VALUES " + ", ".join(vals) +
            " ON CONFLICT(ticker) DO UPDATE SET "
            "pays_siege = excluded.pays_siege, "
            "source_eligibilite = excluded.source_eligibilite, "
+           "sic = COALESCE(excluded.sic, societe.sic), "
            # Le secteur de VanEck, quand il existe, est plus lisible que le
            # libelle SIC : il n'est pas ecrase.
            "secteur = COALESCE(NULLIF(societe.secteur, ''), "
@@ -247,9 +259,8 @@ def main():
                 "WHERE source_eligibilite LIKE 'siege SEC%' "
                 "GROUP BY pays_siege ORDER BY n DESC LIMIT 15")[0]["results"]:
         print(f"  {str(l['pays_siege']):4} {l['n']}")
-    reste = d1("SELECT COUNT(*) AS n FROM societe s JOIN metriques m "
-               "ON m.ticker = s.ticker WHERE s.cik IS NOT NULL "
-               "AND m.exclusion IS NULL AND (s.source_eligibilite IS NULL "
+    reste = d1("SELECT COUNT(*) AS n FROM societe s WHERE s.cik IS NOT NULL "
+               "AND (s.source_eligibilite IS NULL OR s.sic IS NULL "
                "OR s.source_eligibilite NOT LIKE 'siege SEC%')")[0]["results"][0]["n"]
     print(f"\n  reste a resoudre : {reste}"
           + ("  — relancer pour le lot suivant" if reste else "  — termine"))

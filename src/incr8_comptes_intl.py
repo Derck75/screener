@@ -201,12 +201,31 @@ def nombre(t):
     return -v if neg else v
 
 
+_ECHELLE = re.compile(r"Financials in (thousands|millions|billions)?\s*([A-Z]{3})\b")
+FACTEUR = {"thousands": 1e3, "millions": 1e6, "billions": 1e9, None: 1.0}
+
+
+def echelle(html):
+    """Rend (facteur, devise des comptes) lus sur la page — « Financials in
+    millions USD ». La DEVISE DES COMPTES n'est pas celle de la cotation :
+    Equinor publie en dollars et cote en couronnes, Shell publie en dollars
+    et cote en euros a Amsterdam. Rapporter un flux en dollars a une
+    capitalisation en couronnes faussait tout ratio de prix d'un facteur dix.
+    Absente de la page : (1e6, None), le comportement historique."""
+    m = _ECHELLE.search(re.sub(r"<[^>]+>", " ", html or ""))
+    if not m:
+        return 1e6, None
+    return FACTEUR.get(m.group(1), 1e6), m.group(2)
+
+
 def extraire(html, page=None):
-    """Rend {poste: {annee: valeur}}. Les montants sont en MILLIONS chez
-    StockAnalysis, sauf le nombre d'actions : remis en unites ici, sans quoi
-    le noyau comparerait des grandeurs de deux ordres differents."""
+    """Rend {poste: {annee: valeur}}. Les montants sont a l'ECHELLE annoncee
+    par la page (millions le plus souvent), nombre d'actions compris : remis
+    en unites ici, sans quoi le noyau comparerait des grandeurs de deux
+    ordres differents."""
     if not html:
         return {}
+    facteur = echelle(html)[0]
     entetes = re.findall(r"<th[^>]*>(.*?)</th>", html, re.S)
     annees = []
     for h in entetes:
@@ -243,7 +262,7 @@ def extraire(html, page=None):
             # attend une valeur positive, comme pour les deposants SEC.
             if poste == "capex":
                 v = abs(v)
-            out.setdefault(poste, {})[annees[i]] = v * 1e6
+            out.setdefault(poste, {})[annees[i]] = v * facteur
     return out
 
 
@@ -279,7 +298,7 @@ def main():
             d = extraire(html, nom)
             print(f"\n  --- {nom} ---")
             print(f"  URL    : {url}")
-            print(f"  servi  : {len(html) if html else 0} caracteres")
+            print(f"  servi  : {len(html) if html else 0} caracteres · echelle {echelle(html)}")
             print(f"  postes : {len(d)} — {', '.join(sorted(d)) or '(aucun)'}")
             if html:
                 # Libelles de premiere colonne, reconnus ou non. C'est la seule
@@ -324,6 +343,7 @@ def main():
     # auraient garde leurs comptes de l'annee precedente. Chaque lecture est
     # desormais datee, et une societe redevient une cible trente jours plus
     # tard : de quoi capter un nouvel exercice dans le mois de sa publication.
+    migrer("societe", {"devise_comptes": "TEXT"})
     if "comptes_maj" in migrer("societe", {"comptes_maj": "TEXT"}):
         # Premiere mise en service : les comptes deja presents sont dates de
         # facon ETALEE sur trente jours, pour que leurs relectures ne tombent
@@ -402,13 +422,14 @@ def main():
         return
 
     s.phase("collecte")
-    rangs, sans_page, lues = {}, [], []
+    rangs, sans_page, lues, devises = {}, [], [], {}
     for i, t in enumerate(cibles, 1):
         code, sym = PLACE.get(suffixe(t)), symbole_sa(t)
-        total, statuts = {}, []
+        total, statuts, dev_c = {}, [], None
         for chemin in PAGES:
             html, st = lire_code(f"https://stockanalysis.com/quote/{code}/{sym}/financials/{chemin}", s)
             statuts.append(st)
+            dev_c = dev_c or echelle(html)[1]
             d = extraire(html, PAGES[chemin])
             for k, v in d.items():
                 total.setdefault(k, {}).update(v)
@@ -425,6 +446,8 @@ def main():
             continue
         s.compte("societes_lues")
         lues.append(t)
+        if dev_c:
+            devises[t] = dev_c
         for annee in sorted({x for v in total.values() for x in v}):
             ligne = {c: total.get(c, {}).get(annee) for c in COLONNES}
             if ligne["revenue"] is None and ligne["ebit"] is None:
@@ -475,6 +498,16 @@ def main():
            "WHERE ticker IN ("
            + ", ".join("?" * len(lot)) + ")", [RUN_TS] + lot,
            lignes=len(lot), table="societe")
+
+    # Devise des comptes, par lots de meme devise.
+    par_dev = {}
+    for t, dv in devises.items():
+        par_dev.setdefault(dv, []).append(t)
+    for dv, liste in par_dev.items():
+        for i in range(0, len(liste), 20):
+            lot = liste[i:i + 20]
+            d1("UPDATE societe SET devise_comptes = ? WHERE ticker IN ("
+               + ", ".join("?" * len(lot)) + ")", [dv] + lot, lignes=len(lot), table="societe")
 
     # Marquage DATE et MOTIVE : la requete de cibles les ecarte 30 jours
     # (2 jours sur incident), puis les retente.

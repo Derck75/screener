@@ -36,23 +36,28 @@ WEBHOOK = os.environ.get("DISCORD_WEBHOOK", "")
 PLAFOND_NOMS = int(os.environ.get("PLAFOND_NOMS", "5"))
 
 # Candidate au sens de la notification hebdomadaire. Le critere de
-# croissance est un PROXY DU SEUIL N (bande verte, ratio <= 0,80), calcule au
-# taux-obstacle — jamais le point 2 de la note PRIX, que le cadre calcule au
-# WACC et interdit de fusionner avec N. Volontairement plus
+# croissance est le SEUIL N du cadre (bande verte, ratio <= 0,80) : moteur deux
+# phases du serveur, dix ans puis 2,5 %, au taux-obstacle de l'enveloppe
+# (etage valorisation, audit C2) — jamais le point 2 de la note PRIX, que le
+# cadre calcule au WACC et interdit de fusionner avec N. Volontairement plus
 # exigeant que le preset `strict` du screener : on ne signale pas ce qu'on
 # consulte, on signale ce qui merite qu'on s'arrete.
 QUALITE = """
     m.exclusion IS NULL
     AND m.profil_type IN ('industriel', 'capitalistique', 'asset_light')
-    AND (m.roic_median >= 15 OR (m.roic_organique >= 20 AND m.roic_median >= 9))
+    AND (m.roic_median >= 15 OR (m.roic_organique >= 20 AND m.roic_median >= 12))
+    AND COALESCE(m.capi_eur, 0) >= 300e6
     AND m.spread_median > 0 AND m.ca_cagr > 0 AND m.fcf_cagr > 0
     AND m.n_ex_roic_sup_seuil >= m.n_ex_total - 1
     AND (s.suivi_serveur IS NULL OR s.suivi_serveur = 0)
     AND m.croissance_implicite IS NOT NULL AND m.croissance_demontree IS NOT NULL
 """
 # ACQUEREURS : le ROIC organique au-dessus de 20 % repeche Broadcom, TransDigm
-# ou Schneider, mais le comptable doit rester au-dessus du seuil de 9 % — le
-# cadre n'admet jamais l'organique SEUL : le prix paye reste depense.
+# ou Schneider, mais le comptable doit rester au-dessus de 12 % — le cadre
+# n'admet jamais l'organique SEUL : le prix paye reste depense. A 9 %, le
+# plancher laissait passer Teleperformance a 9 % tout rond (audit M4).
+# PLANCHER DE TAILLE COMMUN, en euros (audit M5) : l'univers americain n'en
+# avait aucun — SPAC, trusts et micro-capitalisations entraient dans le crible.
 
 # DEUX VOIES, parce que deux profils de cherte n'ont rien en commun.
 # VOIE VALEUR : les profits actuels couvrent l'essentiel du prix.
@@ -115,6 +120,7 @@ BAISSE_RELANCE = 0.25
 # hebdomadaire le dit : un screener qui tourne sur des donnees perimees ne doit
 # pas ressembler a un screener sain.
 FRAICHEUR = [("metriques", "incr5_metriques%", 2), ("cours", "incr6_prix%", 2),
+             ("valorisation", "incr7_valorisation%", 2),
              ("comptes US", "incr4_comptes%", 9), ("comptes hors US", "incr8_comptes_intl%", 2)]
 
 
@@ -215,7 +221,8 @@ def ligne(c):
          + f"Profits actuels : **{round(100 * c['epv_sur_cours'])} % du cours**"
          + (f" · avec croissance : {round(100 * c['eva_sur_cours'])} %"
             if c.get("eva_sur_cours") is not None else "") + "\n"
-         + (f"Le prix suppose **{c['croissance_implicite']:+.1f} %/an**, "
+         + (f"Seuil N : **{c['croissance_implicite']:+.1f} %/an** sur 10 ans "
+            f"(taux-obstacle {c.get('taux_obstacle') or '?'} %), "
             f"la société a fait {c['croissance_demontree']:+.1f} %\n"
             if c.get("croissance_implicite") is not None
             and c.get("croissance_demontree") is not None else "")
@@ -302,7 +309,7 @@ def main():
     champs = ("m.ticker, s.nom, s.pays_siege, s.eligible_pea, s.vaneck, s.secteur, "
               "m.epv_sur_cours, m.roic_median, m.n_ex_total, m.score_moat, "
               "m.score_moat_max, m.drapeaux, m.eva_sur_cours, m.part_tresorerie, "
-              "m.croissance_implicite, m.croissance_demontree, m.cours, m.concordance, "
+              "m.croissance_implicite, m.croissance_demontree, m.cours, m.concordance, m.taux_obstacle, "
               "m.n_ex_roic_sup_seuil, m.roic_organique")
     ordre = ("ORDER BY (COALESCE(m.concordance, m.epv_sur_cours) > 1.0) ASC, "
              "COALESCE(m.concordance, m.epv_sur_cours) DESC")

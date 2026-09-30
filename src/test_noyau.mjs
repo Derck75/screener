@@ -16,7 +16,8 @@
  * industriel, une fenetre courte reste refusee.
  */
 
-import { derives, roicRetenu, profilSociete, ancrageEPV, mediane, cagr }
+import { derives, roicRetenu, profilSociete, ancrageEPV, mediane, cagr,
+         valeurDCF, croissanceImplicite, NOYAU_SOURCE }
   from './noyau.js';
 
 let ok = 0, ko = 0;
@@ -103,7 +104,9 @@ const cas = [
   ["banque classee financiere", BANQUE, t => t === "financier", false],
   ["racheteur reste industriel", RACHETEUR, t => t !== "financier", true],
   ["float refuse", FLOAT, t => t === "float", false],
-  ["fenetre courte refusee", COURTE, t => t === "fenetre_courte" || t === "float", false],
+  // w178 : une serie trop courte ou lacunaire est « incomplet », plus « float »
+  // (audit C4) — le verdict attendu reste un REFUS.
+  ["fenetre courte refusee", COURTE, t => ["fenetre_courte", "float", "incomplet"].includes(t), false],
 ];
 for (const [nom, S, attendu, evaAttendu] of cas) {
   const der = derives(S, "USD");
@@ -133,6 +136,31 @@ verifier("EPV calculable sur 6 exercices rentables",
 const EC = ancrageEPV(derives(COURTE, "USD"), 100);
 verifier("EPV refuse sur fenetre courte",
   !Number.isFinite(EC?.valeur), "une fenetre de 3 exercices ne doit rien produire");
+
+console.log("\n[DCF deux phases — moteur du seuil N]");
+// Cas fabrique : FCF 100, croissance 10 % sur 10 ans, puis 2,5 %, taux 10 %.
+const V = valeurDCF(100, 0.10, 0.10, 0.025, 10);
+verifier("valeur deux phases finie et positive", Number.isFinite(V) && V > 0, `V=${V}`);
+const G = croissanceImplicite(V, 100, 0.10, 0.025, 10);
+verifier("la croissance implicite retrouve la croissance posee",
+  G && Math.abs(G.g - 0.10) < 1e-6, `g=${G && G.g}`);
+verifier("taux <= croissance terminale refuse", valeurDCF(100, 0.05, 0.02, 0.025, 10) === null);
+// Le cas Microsoft de l'audit : un Gordon perpetuel exige 9,5 %, le moteur
+// deux phases bien davantage. On verifie seulement le SENS de l'ecart.
+const cible = 100 / 0.021;              // rendement FCF de 2,1 %
+const gordon = (0.115 - 0.021) / 1.021;
+const N = croissanceImplicite(cible, 100, 0.115, 0.025, 10);
+verifier("N deux phases > croissance perpetuelle de Gordon", N && N.g > gordon + 0.05,
+  `N=${N && N.g}, Gordon=${gordon}`);
+
+console.log("\n[Donnees insuffisantes]");
+const LACUNAIRE = serie({ revenue: i => 10e9 + i * 1e9, ebit: () => 2e9, netIncome: () => 1.5e9,
+  cfo: () => 2e9, capex: () => 0.5e9, tax: () => 0.4e9, pretax: () => 1.9e9, equity: () => 6e9,
+  cash: () => 1e9, shares: () => 1e9 });
+const PL = profilSociete(derives(LACUNAIRE, "USD"), {});
+verifier("dette et passif courant absents -> incomplet, pas float", PL.type === "incomplet",
+  `profil ${PL.type}`);
+verifier("noyau date de sa source", /^w\d+/.test(NOYAU_SOURCE.worker), JSON.stringify(NOYAU_SOURCE));
 
 console.log(`\n${ok} tests verts, ${ko} rouges`);
 if (ko) {

@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       exercices:
-        description: 'Exercices a ingerer. Vide = fenetre longue 2014-2025'
+        description: 'Exercices a ingerer, ex 2024,2025. Vide = les douze derniers exercices clos'
         required: false
         default: ''
 
@@ -14,8 +14,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # FENETRE GLISSANTE (audit M8) : la liste d'exercices est calculee a chaque
+  # passage. Ecrite en dur (2014-2025), elle n'aurait jamais lu 2026.
+  fenetre:
+    runs-on: ubuntu-latest
+    outputs:
+      annees: ${{ steps.f.outputs.annees }}
+    steps:
+      - id: f
+        env:
+          DEMANDE: ${{ inputs.exercices }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, re, time
+          d = os.environ.get("DEMANDE", "").strip()
+          if d:
+              annees = [int(x) for x in re.findall(r"\d{4}", d)]
+          else:
+              fin = time.gmtime().tm_year - 1
+              annees = list(range(fin - 11, fin + 1))
+          print("annees=" + json.dumps(annees))
+          PY
+
   comptes:
     runs-on: ubuntu-latest
+    needs: fenetre
     timeout-minutes: 90
     strategy:
       # Un job par exercice. Deux a la fois : la SEC plafonne a 10 requetes
@@ -23,8 +46,7 @@ jobs:
       max-parallel: 2
       fail-fast: false
       matrix:
-        exercice: [2014, 2015, 2016, 2017, 2018, 2019,
-                   2020, 2021, 2022, 2023, 2024, 2025]
+        exercice: ${{ fromJSON(needs.fenetre.outputs.annees) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

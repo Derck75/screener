@@ -40,8 +40,11 @@ FRAMES = "https://data.sec.gov/api/xbrl/frames/us-gaap/{c}/{u}/{p}.json"
 # le creux petrolier de 2015-2016 et un cycle complet.
 # Second effet : le filtre dur du cadre exige dix exercices pour un verdict
 # ferme. A six, toute societe etait en fenetre courte.
-EXERCICES = [int(a) for a in os.environ.get(
-    "EXERCICES", ",".join(str(a) for a in range(2014, 2026))).split(",")]
+# FENETRE GLISSANTE (audit M8) : les douze derniers exercices clos, calcules
+# a l'execution. Ecrite en dur (2014-2025), elle n'aurait jamais lu 2026.
+DERNIER_EXERCICE = time.gmtime().tm_year - 1
+EXERCICES = [int(a) for a in (os.environ.get("EXERCICES") or ",".join(
+    str(a) for a in range(DERNIER_EXERCICE - 11, DERNIER_EXERCICE + 1))).split(",")]
 
 # Postes de FLUX (periode annuelle). Plusieurs tags par poste : la taxonomie
 # en offre plusieurs pour la meme notion, l'ordre est un ordre de preference.
@@ -83,14 +86,52 @@ INSTANT = {
     "equity": ["StockholdersEquity"],
     "deferredRev": ["ContractWithCustomerLiabilityCurrent", "DeferredRevenueCurrent"],
     "deferredRevNC": ["ContractWithCustomerLiabilityNoncurrent", "DeferredRevenueNoncurrent"],
-    # Composants de dette : additionnes ici parce que le noyau attend un poste
-    # `debt` unique, et que sa propre composition (esefComposerDette) vit cote
-    # ESEF. Les loyers IFRS 16 / ASC 842 sont INCLUS, comme cote analyse.
-    "_debtLT": ["LongTermDebtNoncurrent"],
-    "_debtCT": ["LongTermDebtCurrent"],
+    # DETTE PAR FAMILLES (audit C4). Deux tags seulement etaient lus :
+    # PACCAR, D.R. Horton, Lennar, Deere ressortaient sans dette, donc avec un
+    # capital investi errone, et sortaient du crible sous un faux motif. Chaque
+    # famille est un poste distinct (un seul tag retenu par famille, dans
+    # l'ordre), et la composition se fait plus bas, par candidats.
+    "_ltdNC": ["LongTermDebtNoncurrent"],          # emprunts longs, part non courante
+    "_ltdTot": ["LongTermDebt"],                   # emprunts longs, part courante COMPRISE
+    "_debtCur": ["DebtCurrent"],                   # total de la dette courante
+    "_ltdCur": ["LongTermDebtCurrent"],            # part courante des emprunts longs
+    "_stb": ["ShortTermBorrowings", "CommercialPaper"],   # emprunts courts
+    "_notes": ["NotesPayable"],                    # billets a payer (promoteurs, captives)
+    # Loyers IFRS 16 / ASC 842 INCLUS, comme cote analyse.
     "_leaseLT": ["OperatingLeaseLiabilityNoncurrent"],
     "_leaseCT": ["OperatingLeaseLiabilityCurrent"],
+    "_leaseTot": ["OperatingLeaseLiability"],
 }
+
+
+def dette_us(d):
+    """Compose `debt` depuis les familles, par CANDIDATS : chaque candidat est
+    une decomposition complete et sans recouvrement ; le PLUS GRAND l'emporte.
+    Meme doctrine que la composition ESEF du serveur : une famille manquante
+    fait sous-estimer, jamais surestimer, donc le maximum est le bon arbitre.
+      A  part non courante + dette courante (totale, ou recomposee)
+      B  emprunts longs TOTAUX + emprunts courts (sans la part courante,
+         deja comprise dans le total)
+      C  billets a payer, quand c'est la seule presentation du deposant
+    Loyers d'exploitation ajoutes a chaque fois. Rend (dette, candidat)."""
+    g = d.get
+    ct_comp = None
+    if g("_ltdCur") is not None or g("_stb") is not None:
+        ct_comp = (g("_ltdCur") or 0) + (g("_stb") or 0)
+    ct = g("_debtCur") if g("_debtCur") is not None else ct_comp
+    cands = []
+    if g("_ltdNC") is not None or ct is not None:
+        cands.append(((g("_ltdNC") or 0) + (ct or 0), "A"))
+    if g("_ltdTot") is not None:
+        cands.append((g("_ltdTot") + (g("_stb") or 0), "B"))
+    if g("_notes") is not None:
+        cands.append((g("_notes"), "C"))
+    fin, cand = max(cands) if cands else (None, None)
+    loy = [x for x in (g("_leaseLT"), g("_leaseCT")) if x is not None]
+    loyers = sum(loy) if loy else g("_leaseTot")
+    if fin is None and loyers is None:
+        return None, None
+    return (fin or 0) + (loyers or 0), cand
 
 COLONNES = ["revenue", "netIncome", "ebit", "grossProfit", "cfo", "capex", "da",
             "ebitda", "sbc", "tax", "pretax", "amortAcq", "assets", "ppe",
@@ -137,7 +178,7 @@ def num(v):
 
 def main():
     s = sonde("incr4_comptes_" + "_".join(str(e) for e in EXERCICES))
-    print(f"incr4_comptes v2 — Run {RUN_TS}")
+    print(f"incr4_comptes v3 — Run {RUN_TS} — exercices {EXERCICES[0]}-{EXERCICES[-1]}")
 
     s.phase("controles")
     verifier_schema("comptes2", ["revenue", "intangTot", "intangExGW",
@@ -189,9 +230,9 @@ def main():
         for annee, d in annees.items():
             if d.get("revenue") is None and d.get("ebit") is None:
                 continue   # entite sans exploitation : pas un manque de donnee
-            morceaux = [d.get(k) for k in ("_debtLT", "_debtCT", "_leaseLT", "_leaseCT")]
-            debt = sum(m for m in morceaux if m is not None) \
-                if any(m is not None for m in morceaux) else None
+            debt, cand = dette_us(d)
+            if cand:
+                s.compte("dette_candidat_" + cand)
             ebit, da = d.get("ebit"), d.get("da")
             ligne = {c: d.get(c) for c in COLONNES}
             ligne["debt"] = debt
@@ -210,7 +251,7 @@ def main():
     # beaucoup de celles d'aujourd'hui n'etaient pas cotees. Le plancher suit
     # donc l'anciennete, et le temoin reste la vraie garde.
     def plancher(annee):
-        recul = 2025 - annee
+        recul = DERNIER_EXERCICE - annee
         return 2500 if recul <= 3 else (2000 if recul <= 7 else 1200)
     mini = sum(plancher(a) for a in EXERCICES)
     if s.compteurs.get("canari_exercices", 0) < 1 or len(rangs) < mini:

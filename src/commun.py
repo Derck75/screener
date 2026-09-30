@@ -41,8 +41,11 @@ D1_URL = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}/d1/databas
 # artificielle qui bloque un systeme par ailleurs sain.
 PLAFOND_JOUR = int(os.environ.get("PLAFOND_ECRITURES", "0"))
 
-# Index par table : chaque index ajoute une ecriture par ligne touchee.
-INDEX = {"societe": 1, "metriques": 2, "comptes": 0, "runs": 0, "presets": 0}
+# Index par table : chaque index ajoute une ecriture par ligne touchee — y
+# compris l'index IMPLICITE d'une cle primaire qui n'est pas un rowid (TEXT
+# ou composite). `comptes` a disparu au profit de `comptes2` : le budget des
+# comptes etait compte sur une table vide (audit, mineur).
+INDEX = {"societe": 2, "metriques": 3, "comptes2": 1, "comptes": 1, "runs": 0, "presets": 1}
 
 RUN_TS = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
