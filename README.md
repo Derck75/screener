@@ -116,6 +116,12 @@ worker (`LOURD=github`), le passage tourne en ESSAI et n'écrit aucun compte.
 | `SEC_UA` | User-Agent déclaré à la SEC |
 | `DISCORD_WEBHOOK` | canal de notification |
 
+## Règle de travail
+
+Toute modification arrive par une branche et une demande de fusion ; les tests
+(F) tournent dessus, et `main` exige qu'ils soient verts (règle de protection
+de branche). Les étapes planifiées lisent toujours `main`.
+
 ## Base
 
 Schéma réel dans `sql/001_schema.sql`. Chaque script crée lui-même les colonnes

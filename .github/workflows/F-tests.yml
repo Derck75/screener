@@ -1,6 +1,8 @@
 name: F tests noyau
 on:
   workflow_dispatch:
+  # Sur chaque demande de fusion : une branche rouge ne se fusionne pas.
+  pull_request:
   push:
     paths:
       - 'src/**'
