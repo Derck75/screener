@@ -34,6 +34,7 @@ import datetime as _dt
 
 WEBHOOK = os.environ.get("DISCORD_WEBHOOK", "")
 PLAFOND_NOMS = int(os.environ.get("PLAFOND_NOMS", "5"))
+LISTE_MAX = int(os.environ.get("LISTE_MAX", "60"))
 
 # Candidate au sens de la notification hebdomadaire. Le critere de
 # croissance est le SEUIL N du cadre (bande verte, ratio <= 0,80) : moteur deux
@@ -121,17 +122,66 @@ BAISSE_RELANCE = 0.25
 # pas ressembler a un screener sain.
 FRAICHEUR = [("metriques", "incr5_metriques%", 2), ("cours", "incr6_prix%", 2),
              ("valorisation", "incr7_valorisation%", 2),
+             ("profils hors US", "incr12_profil_intl%", 3),
              ("comptes US", "incr4_comptes%", 9), ("comptes hors US", "incr8_comptes_intl%", 2)]
 
 
 
+def decouper(corps, taille=3800):
+    """Coupe un corps en morceaux d'au plus `taille` caracteres, aux sauts de
+    paragraphe puis de ligne : la liste exhaustive tronquee a 3 900 caracteres
+    perdait sa fin sans le dire (audit M7)."""
+    morceaux, cur = [], ""
+
+    def ajouter(part, sep):
+        nonlocal cur
+        if cur and len(cur) + len(sep) + len(part) > taille:
+            morceaux.append(cur)
+            cur = ""
+        cur = (cur + sep + part) if cur else part[:taille]
+
+    for bloc in corps.split("\n\n"):
+        if len(bloc) <= taille:
+            ajouter(bloc, "\n\n")
+        else:
+            for i, lig in enumerate(bloc.split("\n")):
+                ajouter(lig, "\n\n" if i == 0 else "\n")
+    if cur:
+        morceaux.append(cur)
+    return morceaux
+
+
+# Etapes dont le DERNIER passage est lu (canari). Motifs LIKE sur runs.etape.
+ETAPES_SUIVIES = ["incr2_vaneck", "incr3_univers_us", "incr4_comptes%", "incr5_metriques",
+                  "incr6_prix%", "incr7_valorisation", "incr8_comptes_intl%", "incr9_siege",
+                  "incr11_secteur_intl", "incr12_profil_intl"]
+
+
 def envoyer(titre, corps, couleur):
+    """Envoie un ou plusieurs messages : au plus 5 400 caracteres par message
+    (Discord refuse au-dela de 6 000, titres compris), 3 800 par encadre."""
+    morceaux = decouper(corps)
     if not WEBHOOK:
         print("  DISCORD_WEBHOOK absent — message affiche, pas envoye")
-        print(f"\n=== {titre} ===\n{corps}\n")
+        print(f"\n=== {titre} ===\n" + "\n---\n".join(morceaux) + "\n")
         return False
-    charge = {"embeds": [{"title": titre, "description": corps[:3900],
-                          "color": couleur}]}
+    messages, cur, taille = [], [], 0
+    for i, m in enumerate(morceaux):
+        if cur and (taille + len(m) > 5400 or len(cur) >= 10):
+            messages.append(cur)
+            cur, taille = [], 0
+        cur.append({"title": titre if i == 0 else f"{titre} (suite)",
+                    "description": m, "color": couleur})
+        taille += len(m) + 60
+    if cur:
+        messages.append(cur)
+    ok = True
+    for embeds in messages:
+        ok = _poster({"embeds": embeds}) and ok
+    return ok
+
+
+def _poster(charge):
     # USER-AGENT OBLIGATOIRE. L'API Discord est derriere Cloudflare, qui
     # refuse la signature par defaut de Python : HTTP 403, « error code 1010 ».
     # Le message ne vient pas de Discord mais de sa protection.
@@ -264,10 +314,30 @@ def sante():
         age = (maintenant - quand).total_seconds() / 86400
         if age > jours:
             alertes.append(f"{nom} : {age:.0f} j")
-    if not alertes:
-        return "✅ *Toutes les étapes ont tourné dans les délais.*"
-    return ("⚠️ **Données en retard** — " + " · ".join(alertes)
-            + ". *Les candidates ci-dessus peuvent reposer sur des chiffres périmés.*")
+    # CANARIS (audit M6) : la fraicheur d'une etape ne dit rien de ses
+    # echecs. incr11 a fini ROUGE vingt-cinq fois de suite sans qu'un seul
+    # message le signale, parce qu'il avait reussi une fois dans la fenetre.
+    # On lit donc le DERNIER passage de chaque etape, et la serie d'echecs
+    # qui le precede.
+    rouges = []
+    for etape in ETAPES_SUIVIES:
+        r = d1("SELECT statut, canari FROM runs WHERE etape LIKE ? AND statut != 'EN COURS' "
+               "ORDER BY id DESC LIMIT 30", [etape])[0]["results"]
+        n = 0
+        for l in r:
+            if l["statut"] == "OK":
+                break
+            n += 1
+        if n:
+            rouges.append(f"{etape.rstrip('%')} 🔴 {n} échec(s) d'affilée")
+    lignes = []
+    if alertes:
+        lignes.append("⚠️ **Données en retard** — " + " · ".join(alertes)
+                      + ". *Les candidates ci-dessus peuvent reposer sur des chiffres périmés.*")
+    if rouges:
+        lignes.append("🔴 **Étapes en échec** — " + " · ".join(rouges)
+                      + ". *Voir la table `runs` ou l'onglet Actions du dépôt.*")
+    return "\n".join(lignes) or "✅ *Toutes les étapes ont tourné dans les délais, aucun canari rouge.*"
 
 
 def enregistrer(c, canal, motif):
@@ -285,10 +355,13 @@ def main():
                     help="enregistre l'etat courant SANS rien envoyer")
     ap.add_argument("--exception-seule", action="store_true",
                     help="ne verifie que l'alerte immediate")
+    ap.add_argument("--rattrapage", action="store_true",
+                    help="envoie les candidates enregistrees en silence par les "
+                         "amorcages et encore candidates aujourd'hui")
     a = ap.parse_args()
 
     s = sonde("incr10_discord")
-    print(f"incr10_discord v9 — Run {RUN_TS}")
+    print(f"incr10_discord v10 — Run {RUN_TS}")
 
     # Auto-migration : plus aucun ALTER TABLE a passer a la main.
     d1("CREATE TABLE IF NOT EXISTS notifications (ticker TEXT PRIMARY KEY, "
@@ -334,6 +407,39 @@ def main():
         s.afficher()
         return
 
+    # ---- rattrapage (audit M7) ---------------------------------------------
+    # Deux amorcages silencieux (19 et 23/09) ont enregistre 118 candidates
+    # sans les envoyer ; elles ne revenaient que sur une baisse de 25 %. On
+    # envoie celles qui SONT ENCORE candidates avec la methode du jour — les
+    # autres ne le sont plus, et le message le dit.
+    if a.rattrapage:
+        s.phase("rattrapage")
+        amorcees = {l["ticker"] for l in d1(
+            "SELECT ticker FROM notifications WHERE canal = 'amorcage'")[0]["results"]}
+        encore = [c for c in candidates if c["ticker"] in amorcees]
+        detail, reste_r = encore[:PLAFOND_NOMS], encore[PLAFOND_NOMS:]
+        blocs = [f"*{len(amorcees)} candidates enregistrées sans envoi lors des amorçages "
+                 f"des 19 et 23/09 ; {len(encore)} le sont encore avec la méthode du jour "
+                 f"(seuil N deux phases, moat propre). Les {len(amorcees) - len(encore)} autres "
+                 f"ne passent plus les critères.*"]
+        if detail:
+            blocs.append("\n\n".join(ligne(c) for c in detail))
+        if reste_r:
+            blocs.append("**Les autres**\n" + "\n".join(compacte(c) for c in reste_r))
+        blocs.append("🔴 **Watchlist, pas des idées.** Toute suite passe par `ajouter` puis l'analyse.")
+        if envoyer("📋 Screener — rattrapage des amorçages", "\n\n".join(blocs), 0x3498db):
+            for c in encore:
+                enregistrer(c, "rattrapage", "amorcage envoye en rattrapage")
+            # Les amorcees qui ne passent plus sont RETIREES : si elles
+            # redeviennent candidates, elles doivent partir comme nouvelles,
+            # pas attendre une baisse de 25 % par rapport a un signalement
+            # qui n'a jamais eu lieu.
+            d1("DELETE FROM notifications WHERE canal = 'amorcage'")
+        journal("OK", "incr10_discord_rattrapage", len(encore), "VERT",
+                f"rattrapage : {len(encore)} envoyees sur {len(amorcees)} amorcees", s.resume())
+        s.afficher()
+        return
+
     # ---- exception ---------------------------------------------------------
     s.phase("exception")
     exc = d1(f"SELECT {champs} {base} {EXCEPTION} {ordre}")[0]["results"]
@@ -356,7 +462,9 @@ def main():
         print("  aucune exception — c'est le cas normal")
 
     if a.exception_seule:
-        journal("OK", "incr10_discord", len(envoyees), "VERT",
+        # Etape distincte : la garde du passage hebdomadaire ne doit pas se
+        # croire servie par une verification d'exception.
+        journal("OK", "incr10_discord_exception", len(envoyees), "VERT",
                 f"exception : {len(envoyees)}", s.resume())
         s.afficher()
         return
@@ -389,7 +497,9 @@ def main():
     # ---- hebdomadaire ------------------------------------------------------
     s.phase("hebdomadaire")
     reste = [c for c in nouvelles if c["ticker"] not in {x["ticker"] for x in envoyees}]
-    lot, autres = reste[:PLAFOND_NOMS], reste[PLAFOND_NOMS:PLAFOND_NOMS + 20]
+    # Liste compacte relevee a 60 lignes : l'envoi se decoupe desormais en
+    # plusieurs encadres au lieu de tronquer (audit M7).
+    lot, autres = reste[:PLAFOND_NOMS], reste[PLAFOND_NOMS:PLAFOND_NOMS + LISTE_MAX]
 
     pea = sum(1 for c in candidates if c.get("eligible_pea") == 1)
     entete = (f"*{len(candidates)} candidates au total, dont {pea} éligibles PEA. "
@@ -401,8 +511,8 @@ def main():
         # La liste exhaustive que tu demandais, sans noyer le message : une
         # ligne par societe au-dela des cinq detaillees.
         blocs.append("**Autres nouvelles**\n" + "\n".join(compacte(c) for c in autres))
-        if len(reste) > PLAFOND_NOMS + 20:
-            blocs.append(f"*… et {len(reste) - PLAFOND_NOMS - 20} de plus, "
+        if len(reste) > PLAFOND_NOMS + LISTE_MAX:
+            blocs.append(f"*… et {len(reste) - PLAFOND_NOMS - LISTE_MAX} de plus, "
                          f"présentées la semaine prochaine.*")
     if relances:
         blocs.append("🔻 **Déjà signalées, désormais moins chères**\n" + "\n".join(
@@ -412,11 +522,11 @@ def main():
     if lot or relances:
         blocs.append("*« Profits actuels » rapporte le pouvoir bénéficiaire — ce que "
                      "vaudrait la société si elle cessait de croître — à ce que le marché "
-                     "la paie. La ligne suivante confronte la croissance que le prix exige "
-                     "pour rapporter 10 % par an en PEA, 11,5 % en CTO, à celle réellement "
-                     "réalisée — au moins 4 % par an pour figurer ici. ⚠️ cycle incomplet : "
-                     "cinq exercices seulement, la médiane peut capitaliser un sommet.*"
-                     "\n\n🔴 **Watchlist, pas des idées.** Moat proxy, aucune fair value.")
+                     "la paie. La ligne suivante confronte le seuil N — croissance nécessaire "
+                     "sur dix ans, puis 2,5 %, pour rapporter 10 % par an en PEA, 11,5 % en CTO — "
+                     "à celle réellement démontrée, au moins 4 % par an pour figurer ici. "
+                     "⚠️ cycle incomplet : cinq exercices seulement, la médiane peut capitaliser "
+                     "un sommet.*\n\n🔴 **Watchlist, pas des idées.** Moat calculé, aucune fair value.")
         titre, couleur = "📋 Screener — nouvelles candidates", 0x3498db
     else:
         # L'embed part MEME VIDE : un canal muet ne doit pas ressembler a un

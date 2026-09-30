@@ -3,10 +3,13 @@ on:
   # Dimanche 18 h UTC. Une cadence hebdomadaire, jamais quotidienne : un
   # screener quality-growth converge, et un flux quotidien produirait surtout
   # de la pression a agir sur un portefeuille qui n'a pas de place.
+  # Declenche a l'heure par le worker Cloudflare (DECLENCHEURS) ; ces deux
+  # `schedule` restent en FILET, minute decalee, et sautent si l'envoi a deja
+  # eu lieu (garde).
   schedule:
-    - cron: '0 18 * * 0'
+    - cron: '7 18 * * 0'
   # Verification de l'exception chaque jour a 17 h, sans message hebdomadaire.
-    - cron: '0 17 * * 1-6'
+    - cron: '7 17 * * 1-6'
   workflow_dispatch:
     inputs:
       mode:
@@ -18,10 +21,38 @@ on:
           - hebdo
           - amorcage
           - exception
+          - rattrapage
+
+concurrency:
+  group: screener-discord
+  cancel-in-progress: false
 
 jobs:
+  garde:
+    runs-on: ubuntu-latest
+    outputs:
+      faire: ${{ steps.g.outputs.faire }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: src
+      - id: g
+        env:
+          CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          EXCEPTION: ${{ github.event.schedule == '7 17 * * 1-6' }}
+        run: |
+          if [ "$EXCEPTION" = "true" ]; then
+            python3 src/garde.py --etape incr10_discord_exception --heures 12
+          else
+            python3 src/garde.py --etape incr10_discord --heures 72
+          fi
+
   discord:
     runs-on: ubuntu-latest
+    needs: garde
+    if: needs.garde.outputs.faire == 'true'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -40,5 +71,6 @@ jobs:
         run: >
           python src/incr10_discord.py
           ${{ inputs.mode == 'amorcage' && '--amorcage'
-           || (inputs.mode == 'exception' || github.event.schedule == '0 17 * * 1-6')
+           || inputs.mode == 'rattrapage' && '--rattrapage'
+           || (inputs.mode == 'exception' || github.event.schedule == '7 17 * * 1-6')
               && '--exception-seule' || '' }}

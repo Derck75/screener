@@ -616,7 +616,7 @@ async function main() {
 
   if (aEcrire.length) {
     phase("ecriture");
-    const cout = aEcrire.length * 4;   // metriques : 2 index + la cle primaire
+    const cout = aEcrire.length * 3;   // metriques : idx_screen + la cle primaire
     if (PLAFOND > 0) {
       // Les intentions ne comptent que deux heures : un run qui n'a jamais
       // abouti n'a pas ecrit ce qu'il annoncait, et les cumuler bloquait le

@@ -28,11 +28,12 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from commun import d1, journal, sonde, budget, RUN_TS  # noqa: E402
+from commun import d1, journal, sonde, budget, migrer, RUN_TS  # noqa: E402
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 PAUSE = float(os.environ.get("PAUSE_SA", "1.0"))
+CANARI = "MC.PA"   # LVMH : sa page porte toujours son activite
 
 # Table unique (places.py) : la copie locale portait les sept codes faux.
 from places import SA_CODE as PLACE, suffixe, symbole_sa  # noqa: E402
@@ -186,11 +187,19 @@ MOTIFS = [
 ]
 
 
+DERNIER_STATUT = {"code": None}
+
+
 def lire(url, s=None):
+    """Rend le HTML ou None ; le statut reste lisible dans DERNIER_STATUT :
+    seul un 404 ou une page servie sans activite justifie de dater l'echec,
+    jamais une coupure ou un refus passager."""
+    DERNIER_STATUT["code"] = None
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     for essai in range(3):
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
+                DERNIER_STATUT["code"] = 200
                 return r.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             if e.code == 429:
@@ -198,13 +207,16 @@ def lire(url, s=None):
                     s.compte("429_rattrape")
                 time.sleep(8 * (essai + 1))
                 continue
+            DERNIER_STATUT["code"] = e.code
             if s and e.code != 404:
                 s.erreur(f"http_{e.code}", url[-45:])
             return None
         except Exception as e:
+            DERNIER_STATUT["code"] = "reseau"
             if s:
                 s.erreur("reseau_sa", f"{type(e).__name__}")
             return None
+    DERNIER_STATUT["code"] = 429
     return None
 
 
@@ -252,7 +264,7 @@ def main():
     a = ap.parse_args()
 
     s = sonde("incr11_secteur_intl")
-    print(f"incr11_secteur_intl v1 — Run {RUN_TS}")
+    print(f"incr11_secteur_intl v2 — Run {RUN_TS}")
 
     # ---- sonde -------------------------------------------------------------
     if a.sonder:
@@ -300,8 +312,27 @@ def main():
         return
 
     # ---- file --------------------------------------------------------------
+    # ETAT TERMINAL (audit M6). Une societe dont la page ne porte aucune
+    # activite restait en tete de file — elle est triee par capitalisation — et
+    # un passage ou les 200 premieres echouaient finissait ROUGE, vingt fois
+    # d'affilee depuis le 23/09, sans que rien ne soit casse. L'echec est
+    # desormais DATE : la societe sort de la file et n'est retentee qu'apres
+    # 90 jours. Le ROUGE est reserve au canari, qui dit si l'extraction marche.
+    s.phase("canari")
+    brut_c, _ = extraire(lire(url_de(CANARI), s))
+    if not brut_c:
+        journal("PANNE", "incr11_secteur_intl", 0, "ROUGE",
+                f"canari rouge : aucune activite lue pour {CANARI} — motif d'extraction a revoir",
+                s.resume())
+        s.afficher()
+        sys.exit(1)
+    time.sleep(PAUSE)
+    migrer("societe", {"secteur_essai": "TEXT"})
+
     s.phase("cibles")
-    W = ("s.origine LIKE '%intl%' AND (s.secteur IS NULL OR s.secteur = '')")
+    W = ("s.origine LIKE '%intl%' AND (s.secteur IS NULL OR s.secteur = '') "
+         "AND (s.secteur_essai IS NULL OR s.secteur_essai < "
+         "strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-90 days'))")
     if a.avec_comptes:
         W += " AND EXISTS (SELECT 1 FROM comptes2 c WHERE c.ticker = s.ticker)"
     cibles = [l["ticker"] for l in d1(
@@ -316,16 +347,21 @@ def main():
         return
 
     s.phase("collecte")
-    maj, inconnus = [], {}
+    maj, inconnus, sans = [], {}, []
     for i, t in enumerate(cibles, 1):
         u = url_de(t)
         if not u:
-            s.erreur("place_inconnue", t)
+            s.compte("place_inconnue")
+            sans.append(t)
             continue
         brut, _ = extraire(lire(u, s))
         time.sleep(PAUSE)
         if not brut:
-            s.erreur("sans_activite", t)
+            if DERNIER_STATUT["code"] in (200, 404):
+                s.compte("sans_activite")
+                sans.append(t)
+            else:
+                s.compte("incident")          # retente au passage suivant
             continue
         fr = traduire(brut)
         if brut.strip().lower() not in FR:
@@ -334,12 +370,11 @@ def main():
         if i % 50 == 0:
             print(f"  {i}/{len(cibles)} — {len(maj)} activites")
 
-    print(f"  {len(maj)} activites relevees")
-    if not maj:
-        journal("PANNE", "incr11_secteur_intl", 0, "ROUGE",
-                "aucune activite extraite", s.resume())
-        s.afficher()
-        sys.exit(1)
+    print(f"  {len(maj)} activites relevees, {len(sans)} sans activite (retentees dans 90 jours)")
+    for i in range(0, len(sans), 20):
+        lot = sans[i:i + 20]
+        d1("UPDATE societe SET secteur_essai = ? WHERE ticker IN ("
+           + ", ".join("?" * len(lot)) + ")", [RUN_TS] + lot, lignes=len(lot), table="societe")
 
     s.phase("ecriture")
     budget(len(maj), "societe")
@@ -361,11 +396,11 @@ def main():
         for k, v in sorted(inconnus.items(), key=lambda x: -x[1])[:12]:
             print(f"    {v:3}  {k}")
 
-    reste = total - len(maj)
+    reste = total - len(maj) - len(sans)
     print(f"\n  reste : {reste}" + ("  — relancer" if reste > 0 else "  — termine"))
     r = s.afficher()
-    journal("OK", "incr11_secteur_intl", n, "VERT",
-            f"{n} activites, {reste} restantes", r)
+    journal("OK", "incr11_secteur_intl", n + len(sans), "VERT",
+            f"{n} activites, {len(sans)} sans activite, {reste} restantes", r)
     print("OK")
 
 

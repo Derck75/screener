@@ -52,3 +52,9 @@ jobs:
       # SPAC, « incomplet », cyclique, moat propre, seuil N, devises.
       - name: Chaine metriques et valorisation
         run: node --no-warnings tests/test_chaine.mjs
+
+      - name: Univers, comptes internationaux et Discord (hors reseau)
+        run: |
+          python tests/test_univers.py
+          python tests/test_incr8.py
+          python tests/test_discord.py

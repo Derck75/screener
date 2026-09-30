@@ -45,7 +45,10 @@ PLAFOND_JOUR = int(os.environ.get("PLAFOND_ECRITURES", "0"))
 # compris l'index IMPLICITE d'une cle primaire qui n'est pas un rowid (TEXT
 # ou composite). `comptes` a disparu au profit de `comptes2` : le budget des
 # comptes etait compte sur une table vide (audit, mineur).
-INDEX = {"societe": 2, "metriques": 3, "comptes2": 1, "comptes": 1, "runs": 0, "presets": 1}
+# Mesure en base le 30/09/2026 : societe porte idx_soc_univers, metriques
+# idx_screen, et chaque table a cle TEXT son index de cle primaire.
+INDEX = {"societe": 2, "metriques": 2, "comptes2": 1, "comptes": 1, "runs": 0,
+         "presets": 1, "notifications": 1}
 
 RUN_TS = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
