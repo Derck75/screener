@@ -89,8 +89,9 @@ elle ne remplace jamais la liste du courtier, et la source le dit.
 ## Déclenchement à l'heure
 
 Le cron de GitHub part avec plusieurs heures de retard. Le worker Cloudflare
-déclenche les workflows à l'heure par `workflow_dispatch`, selon sa variable
-`DECLENCHEURS` :
+déclenche les workflows à l'heure par `workflow_dispatch`, selon une table
+intégrée depuis w180 (heures UTC), que la variable `DECLENCHEURS` peut
+remplacer :
 
 ```json
 [{"wf":"W-lourd.yml","h":2},
