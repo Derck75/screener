@@ -64,6 +64,13 @@ chaque étape : une étape en échec répété y apparaît en rouge.
   sur trois. Bandes du cadre sur N ÷ croissance démontrée : vert ≤ 0,80 ·
   orange ≤ 1,00 · jaune ≤ 1,20 · rouge au-delà. Stocké dans
   `croissance_implicite` (nom historique), `n_ratio`, `bande_n`.
+- **Réserve** (§11 du cadre) : quand le FCF croît de plus de 10 points
+  par an au-dessus du CA et de l'EBIT (`fcf_divergence`, mesurée par `incr5`
+  sur les fenêtres du noyau) ou part d'une année en creux (`base_creux`), une
+  bande verte, orange ou jaune devient `reserve` : la croissance vient du BFR
+  ou du capex, ou d'une sortie de creux, et ne fonde aucun signal favorable.
+  Le ratio n'est jamais corrigé ; le rouge reste rouge. Ni `croissance_ok` ni
+  Discord ne retiennent une ligne en réserve.
 - EPV, EVA, concordance, part de trésorerie, rendement FCF, PER — tous
   rapportés à la capitalisation **exprimée dans la devise des comptes** (change
   de référence BCE du jour).

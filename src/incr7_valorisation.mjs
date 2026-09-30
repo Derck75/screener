@@ -27,6 +27,9 @@ const RUN_TS = new Date().toISOString().slice(0, 19) + "Z";
 const ANNEES = 10;
 const OBSTACLE = { pea: 0.10, cto: 0.115 };
 const EPV_INVRAISEMBLABLE = 5;
+// Ecart, en points de croissance annuelle, au-dela duquel un FCF « croit
+// nettement plus vite » que le CA et l EBIT (§11 du cadre).
+export const ECART_FCF = 10;
 export const BCE = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml";
 
 // Euros par unite — REPLI seulement, quand la BCE ne cote pas la devise
@@ -140,6 +143,25 @@ export function valoriser(l, eur) {
     o.bande_n = o.croissance_implicite <= gd ? "vert" : "rouge";   // croissance demontree nulle ou negative
   }
 
+  // RESERVE (§11) : une croissance demontree portee par un FCF qui diverge du
+  // CA et de l'EBIT, ou partie d'une annee en creux, ne peut pas fonder une
+  // bande favorable. Le rouge reste rouge — un denominateur flatteur qui
+  // donne encore rouge est un rouge solide ; les autres bandes passent en
+  // « reserve », la bande qu'elles auraient eue restant ecrite dans la note.
+  // Le chiffre n'est jamais corrige : le cadre refuse un niveau, il n'en
+  // fabrique pas un autre.
+  if (o.bande_n && o.bande_n !== "rouge") {
+    const div = Number(l.fcf_divergence);
+    const motifs = [];
+    if (l.fcf_divergence !== null && l.fcf_divergence !== undefined && div > ECART_FCF)
+      motifs.push(`FCF +${div.toFixed(0)} pts au-dessus du CA et de l'EBIT (BFR ou capex)`);
+    if (Number(l.base_creux) === 1) motifs.push("année de départ en creux");
+    if (motifs.length) {
+      o.n_note = (o.n_note ? o.n_note + " · " : "") + `base contestable : ${motifs.join(", ")} — bande ${o.bande_n} non retenue`;
+      o.bande_n = "reserve";
+    }
+  }
+
   if (Number.isFinite(Number(l.epv_capitaux)) && l.epv_capitaux !== null) {
     const e = Number(l.epv_capitaux) / capi;
     if (e > EPV_INVRAISEMBLABLE) o.n_note = (o.n_note ? o.n_note + " · " : "") + `EPV/cours ${e.toFixed(1)} invraisemblable, écartée`;
@@ -179,7 +201,7 @@ export async function main() {
   const lignes = [];
   for (let p = 0; ; p++) {
     const r = (await d1("SELECT m.ticker, m.cours, m.fcf_depart, m.dette_nette, m.epv_capitaux, m.eva_capitaux, "
-      + "m.croissance_demontree, m.rn_dernier, s.capitalisation, s.eligible_pea, s.devise_comptes "
+      + "m.croissance_demontree, m.fcf_divergence, m.base_creux, m.rn_dernier, s.capitalisation, s.eligible_pea, s.devise_comptes "
       + "FROM metriques m JOIN societe s ON s.ticker = m.ticker "
       + "WHERE m.exclusion IS NULL AND m.cours IS NOT NULL ORDER BY m.ticker LIMIT 5000 OFFSET ?", [p * 5000]))[0].results;
     if (!r.length) break;
