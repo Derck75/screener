@@ -10,7 +10,7 @@ for c in ["origine TEXT", "statut_serveur TEXT"]:
     except Exception: pass
 for c in ["profil_type TEXT", "drapeaux TEXT", "croissance_implicite REAL", "croissance_demontree REAL", "taux_obstacle REAL",
           "capi_eur REAL", "roic_organique REAL", "part_tresorerie REAL", "concordance REAL", "eva_sur_cours REAL", "score_moat_max INTEGER",
-          "ca_cagr5 REAL", "fcf_cagr5 REAL", "moat_propre TEXT"]:
+          "ca_cagr5 REAL", "fcf_cagr5 REAL", "moat_propre TEXT", "bande_n TEXT"]:
     try: db.execute(f"ALTER TABLE metriques ADD COLUMN {c}")
     except Exception: pass
 try: db.execute("ALTER TABLE runs ADD COLUMN detail TEXT")
@@ -54,4 +54,8 @@ s = D.sante()
 ok("incr11_secteur_intl 🔴 3 échec(s)" in s, "sante : incr11 signale en echec 3 fois de suite")
 sys.argv = ["x", "--exception-seule"]; D.main()
 ok(journaux[-1][1] == "incr10_discord_exception", "exception journalisee a part (garde hebdo intacte)")
+compter = lambda: db.execute("SELECT COUNT(*) FROM metriques m JOIN societe s ON s.ticker = m.ticker WHERE " + D.CANDIDATE).fetchone()[0]
+avant = compter()
+db.execute("UPDATE metriques SET bande_n = 'reserve' WHERE ticker = 'AAA'")
+ok(compter() == avant - 1, f"bande en reserve (§11) : plus candidate ({avant} -> {compter()})")
 sys.exit(1 if ECHECS else 0)
