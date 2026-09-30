@@ -282,17 +282,22 @@ async function journaliser(W, kv, B) {
 }
 
 /* ── Point d'entrée ────────────────────────────────────────────────────── */
+/* Sur GitHub Actions, chaque ligne de bilan remonte aussi en annotation : le
+   journal complet n'est pas lisible hors de l'interface, les annotations le
+   sont par l'API. Ces lignes ne portent que des comptes, jamais un ticker. */
+const dire = m => console.log((ENV.GITHUB_ACTIONS ? '::notice::' : '') + m);
+
 export async function executerLourd({ kv, source, cle, mode, delegation }) {
   const { W, appliques, manques } = await chargerModule(source);
   const B = nouveauBilan();
   const essai = !cle && delegation === false;
-  console.log(`${VERSION_SCRIPT} · worker ${W.WORKER_VERSION} · mode ${cle ? 'demande' : mode}${essai ? ' (ESSAI : délégation inactive côté worker, aucun compte écrit)' : ''}${delegation === null ? ' · réglages du worker illisibles, délégation supposée active' : ''}`);
-  console.log(`patches appliqués ${appliques.length}/${PATCHES.length}${manques.length ? ' — absents : ' + manques.join(' ; ') : ''}`);
+  dire(`${VERSION_SCRIPT} · worker ${W.WORKER_VERSION} · mode ${cle ? 'demande' : mode}${essai ? ' (ESSAI : délégation inactive côté worker, aucun compte écrit)' : ''}${delegation === null ? ' · réglages du worker illisibles, délégation supposée active' : ''}`);
+  dire(`patches appliqués ${appliques.length}/${PATCHES.length}${manques.length ? ' — absents : ' + manques.join(' ; ') : ''}`);
 
   if (!cle && mode === 'planifie') {
     const b = await W.litJSON(kv, 'lourd:ok');
     if (b && b.quand && ageJours(b.quand) < 0.5 && !b.essai) {
-      console.log('passage réussi il y a moins de 12 h : rien à faire (filet de sécurité)');
+      dire('passage réussi il y a moins de 12 h : rien à faire (filet de sécurité)');
       return { saute: true, bilan: {}, erreurs: 0 };
     }
   }
@@ -302,7 +307,7 @@ export async function executerLourd({ kv, source, cle, mode, delegation }) {
      sans quoi une demande isolée masquerait un passage quotidien en panne. */
   if (cle) {
     const rec = await W.litJSON(kv, 'lourd:r:' + cle);
-    if (!rec) { console.log('demande introuvable (expirée ou clé erronée) : rien à faire'); return { introuvable: true, bilan: {}, erreurs: 0 }; }
+    if (!rec) { dire('demande introuvable (expirée ou clé erronée) : rien à faire'); return { introuvable: true, bilan: {}, erreurs: 0 }; }
     let sortie = null;
     if (rec.type === 'outil') {
       try {
@@ -341,7 +346,7 @@ export async function executerLourd({ kv, source, cle, mode, delegation }) {
       await kv.put(rec.idx, JSON.stringify(Object.assign(idx, { fin: new Date().toISOString(), sortie: String(sortie || '(sortie vide)').slice(0, 60000) })), { expirationTtl: 604800 });
     }
     if (B.erreurs.length) await journaliser(W, kv, B);
-    console.log(`demande traitée · ${Object.entries(B.compteurs).map(([k, v]) => `${k}=${v}`).join(', ') || 'aucun compte'} · erreurs ${B.erreurs.length}`);
+    dire(`demande traitée · ${Object.entries(B.compteurs).map(([k, v]) => `${k}=${v}`).join(', ') || 'aucun compte'} · erreurs ${B.erreurs.length}`);
     return { bilan: B.compteurs, erreurs: B.erreurs.length, sortie };
   }
 
@@ -361,8 +366,8 @@ export async function executerLourd({ kv, source, cle, mode, delegation }) {
     worker: W.WORKER_VERSION, script: VERSION_SCRIPT, patchesAbsents: manques.length, delegation
   }), { expirationTtl: 2592000 });
   if (B.erreurs.length) await journaliser(W, kv, B);
-  console.log('bilan : ' + Object.entries(bilan).map(([k, v]) => `${k}=${v}`).join(', '));
-  console.log(`erreurs : ${B.erreurs.length}${B.erreurs.length ? ' (détail privé en KV lourd:journal)' : ''}`);
+  dire('bilan : ' + Object.entries(bilan).map(([k, v]) => `${k}=${v}`).join(', '));
+  dire(`erreurs : ${B.erreurs.length}${B.erreurs.length ? ' (détail privé en KV lourd:journal)' : ''}`);
   return { bilan: B.compteurs, erreurs: B.erreurs.length };
 }
 
@@ -370,9 +375,9 @@ export async function executerLourd({ kv, source, cle, mode, delegation }) {
 const direct = process.argv[1] && import.meta.url === url.pathToFileURL(path.resolve(process.argv[1])).href;
 if (direct) {
   const manquants = ['CF_ACCOUNT_ID', 'CF_API_TOKEN', 'CF_KV_ID'].filter(k => !ENV[k]);
-  if (manquants.length) { console.log('secrets absents : ' + manquants.join(', ')); process.exit(1); }
+  if (manquants.length) { dire('secrets absents : ' + manquants.join(', ')); process.exit(1); }
   const cle = String(ENV.CLE || '').trim();
-  if (cle && !/^[0-9a-f]{16}$/.test(cle)) { console.log('clé de demande invalide'); process.exit(1); }
+  if (cle && !/^[0-9a-f]{16}$/.test(cle)) { dire('clé de demande invalide'); process.exit(1); }
   try {
     const source = await telechargerWorker();
     const delegation = cle ? true : await delegationActive();
@@ -381,7 +386,7 @@ if (direct) {
     const produit = (b.edgar_lots_ecrits || 0) + (b.esef_passages || 0) + (b.sa_ecrits || 0) + (b.outils_executes || 0);
     if (r.erreurs && !produit) process.exitCode = 1;
   } catch (e) {
-    console.log('PANNE : ' + String(e && e.message || e).replace(/https?:\/\/\S+/g, '<url>').slice(0, 200));
+    dire('PANNE : ' + String(e && e.message || e).replace(/https?:\/\/\S+/g, '<url>').slice(0, 200));
     process.exit(1);
   }
 }
