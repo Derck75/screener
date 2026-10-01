@@ -108,6 +108,16 @@ POSTES = {
 # un prefixe plus court qui le contiendrait.
 _POSTES_TRIES = sorted(POSTES, key=len, reverse=True)
 
+# PRIORITE DES LIBELLES (audit, mineur) — plusieurs lignes d'une meme page
+# peuvent viser le meme poste : « Operating Income » et « EBIT », « Cash &
+# Equivalents » et « Cash & Short-Term Investments », « Shareholders' Equity »
+# et « Total Equity ». La derniere ligne lue l'emportait, donc l'EBIT (non
+# operationnel compris), la tresorerie elargie aux placements et les capitaux
+# propres minoritaires compris — trois definitions differentes de celles des
+# deposants SEC. Le rang est desormais l'ordre de `POSTES` : le premier
+# libelle cite pour un poste gagne, quel que soit l'ordre des lignes.
+RANG = {cle: i for i, cle in enumerate(POSTES)}
+
 COLONNES = ["revenue", "netIncome", "ebit", "grossProfit", "cfo", "capex", "da",
             "ebitda", "sbc", "tax", "pretax", "amortAcq", "assets", "ppe",
             "intangTot", "intangExGW", "goodwill", "receivables", "inventory",
@@ -179,13 +189,18 @@ def reconnaitre(libelle):
     Les libelles sont essayes du plus long au plus court, pour que
     « total current liabilities » gagne sur « total current ».
     """
+    return reconnaitre_cle(libelle)[0]
+
+
+def reconnaitre_cle(libelle):
+    """(poste, libelle de reference) ou (None, None)."""
     if libelle in POSTES:
-        return POSTES[libelle]
+        return POSTES[libelle], libelle
     for cle in _POSTES_TRIES:
         if libelle.startswith(cle) and (len(libelle) == len(cle)
                                         or libelle[len(cle)] == " "):
-            return POSTES[cle]
-    return None
+            return POSTES[cle], cle
+    return None, None
 
 
 def nombre(t):
@@ -234,12 +249,12 @@ def extraire(html, page=None):
     if not any(annees):
         return {}
 
-    out = {}
+    out, rangs = {}, {}
     for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S):
         cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, re.S)
         if len(cells) < 2:
             continue
-        poste = reconnaitre(norm(cells[0]))
+        poste, cle = reconnaitre_cle(norm(cells[0]))
         if not poste:
             continue
         # Un poste lu hors de sa page est un faux positif de la reconnaissance
@@ -262,6 +277,10 @@ def extraire(html, page=None):
             # attend une valeur positive, comme pour les deposants SEC.
             if poste == "capex":
                 v = abs(v)
+            r = RANG.get(cle, len(RANG))
+            if r > rangs.get((poste, annees[i]), len(RANG) + 1):
+                continue          # un libelle prioritaire a deja servi ce poste
+            rangs[(poste, annees[i])] = r
             out.setdefault(poste, {})[annees[i]] = v * facteur
     return out
 
