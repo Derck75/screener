@@ -58,5 +58,6 @@ jobs:
       - name: Univers, comptes internationaux et Discord (hors reseau)
         run: |
           python tests/test_univers.py
+          python tests/test_univers_pages.py
           python tests/test_incr8.py
           python tests/test_discord.py
