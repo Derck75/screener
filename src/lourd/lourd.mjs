@@ -47,10 +47,10 @@ export const VERSION_SCRIPT = 'lourd v1';
    une fois : un motif absent est publié (compte seulement), jamais ignoré. */
 export const PATCHES = [
   [/const CF_PLAFOND_OCTETS = [^;]+;/, 'const CF_PLAFOND_OCTETS = 250000000;', 'companyfacts sans plafond de taille'],
-  [/const ESEF_TAILLE_MAX = [^;]+;/, 'const ESEF_TAILLE_MAX = 64 * 1024 * 1024;', 'dépôts ESEF jusqu\'à 64 Mo'],
-  [/const ESEF_ZIP_MAX = [^;]+;/, 'const ESEF_ZIP_MAX = 64 * 1024 * 1024;', 'archives ESEF jusqu\'à 64 Mo'],
-  [/const ESEF_IX_MAX = [^;]+;/, 'const ESEF_IX_MAX = 64 * 1024 * 1024;', 'rapports iXBRL décompressés jusqu\'à 64 Mo'],
-  [/const ESEF_TRANCHE_DEFAUT = [^;]+;/, 'const ESEF_TRANCHE_DEFAUT = 64 * 1024 * 1024;', 'un dépôt lu d\'un seul tenant'],
+  [/const ESEF_TAILLE_MAX = [^;]+;/, 'const ESEF_TAILLE_MAX = 128 * 1024 * 1024;', 'dépôts ESEF jusqu\'à 128 Mo'],
+  [/const ESEF_ZIP_MAX = [^;]+;/, 'const ESEF_ZIP_MAX = 128 * 1024 * 1024;', 'archives ESEF jusqu\'à 128 Mo'],
+  [/const ESEF_IX_MAX = [^;]+;/, 'const ESEF_IX_MAX = 128 * 1024 * 1024;', 'rapports iXBRL décompressés jusqu\'à 128 Mo'],
+  [/const ESEF_TRANCHE_DEFAUT = [^;]+;/, 'const ESEF_TRANCHE_DEFAUT = 128 * 1024 * 1024;', 'un dépôt lu d\'un seul tenant'],
   [/const ESEF_ZIP_PAR_PASSAGE = [^;]+;/, 'const ESEF_ZIP_PAR_PASSAGE = 8;', 'huit archives par appel'],
   [/const PLAFOND_REQUETES = [^;]+;/, 'const PLAFOND_REQUETES = 400;', 'sous-requêtes non plafonnées à 50']
 ];
