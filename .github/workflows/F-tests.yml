@@ -60,4 +60,5 @@ jobs:
           python tests/test_univers.py
           python tests/test_univers_pages.py
           python tests/test_incr8.py
+          python tests/test_incr8_libelles.py
           python tests/test_discord.py
