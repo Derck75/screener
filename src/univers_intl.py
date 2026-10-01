@@ -118,6 +118,37 @@ def lire(url, timeout=45):
         return rep.read().decode("utf-8", "replace")
 
 
+# PAGINATION (01/10/2026) — une liste de place est servie par pages de 500
+# lignes, triees par capitalisation decroissante (`?page=2`, `?page=3`...).
+# Une place mixte comme Xetra cote 1 300 societes dont les plus grosses sont
+# etrangeres : la premiere page s'arretait vers 18 Md EUR et toutes les
+# entreprises allemandes de taille moyenne disparaissaient de l'univers. On
+# lit donc les pages suivantes tant que la page est pleine ET que sa derniere
+# capitalisation reste au-dessus du seuil : sous le seuil, rien ne serait
+# retenu de toute facon.
+TAILLE_PAGE = 499
+PAGES_MAX = 8
+
+
+def lire_liste(chemin, seuil_local=0):
+    """(lignes, forme, pages lues, tronque) — `tronque` vrai seulement si la
+    derniere page lue etait pleine ET au-dessus du seuil au plafond de pages."""
+    lignes, vus, forme, n = [], set(), None, 0
+    for p in range(1, PAGES_MAX + 1):
+        url = f"https://stockanalysis.com/list/{chemin}/" + (f"?page={p}" if p > 1 else "")
+        page, forme = extraire(lire(url))
+        n += 1
+        neuves = [l for l in page if l["sym"] not in vus]
+        vus.update(l["sym"] for l in page)
+        lignes += neuves
+        caps = [l["cap"] for l in page if l["cap"]]
+        pleine = len(page) >= TAILLE_PAGE and neuves
+        if not pleine or (seuil_local and caps and min(caps) < seuil_local):
+            return lignes, forme, n, False
+        time.sleep(0.6)
+    return lignes, forme, n, True
+
+
 TRANSLIT = str.maketrans({"ø": "o", "æ": "ae", "å": "a", "ß": "ss", "đ": "d",
                           "ł": "l", "þ": "th", "ð": "d", "œ": "oe"})
 
@@ -334,13 +365,12 @@ def main():
             resume.append((code, pays, 0, 0, 0, "chemin introuvable"))
             continue
         try:
-            html = lire(f"https://stockanalysis.com/list/{chemin}/")
+            lignes, forme, npages, tronque_brut = lire_liste(chemin, a.cap_min / taux if a.cap_min else 0)
         except Exception as e:
             print(f"{code:5} {pays}  {type(e).__name__} sur /{chemin}/")
             resume.append((code, pays, 0, 0, 0, "erreur"))
             continue
 
-        lignes, forme = extraire(html)
         avec_cap = sum(1 for l in lignes if l["cap"])
         secondaires = doublons = retenues = etrangeres = mixtes_doubles = 0
         mixte = code in MIXTES
@@ -390,12 +420,12 @@ def main():
             retenues_globales.append(l)
             retenues += 1
 
-        tronque = " TRONQUE" if len(lignes) >= 499 else ""
+        tronque = " TRONQUE" if tronque_brut else ""
         if not lignes:
             print(f"{code:5} {pays}  aucune ligne — {forme}")
             resume.append((code, pays, 0, 0, 0, forme))
             continue
-        print(f"{code:5} {pays}  {len(lignes):4} lues{tronque} · {avec_cap} avec capi · "
+        print(f"{code:5} {pays}  {len(lignes):4} lues sur {npages} page(s){tronque} · {avec_cap} avec capi · "
               f"{secondaires} secondaires · {etrangeres} etrangeres · "
               f"{doublons} doublons · {mixtes_doubles} doubles mixtes · {retenues} retenues"
               f"{'  [PEA]' if elig else ''}")
