@@ -18,6 +18,7 @@ MEMOIRE : les frames sont traitees poste par poste et filtrees immediatement
 sur l'univers connu. Rien ne reste en memoire au-dela des CIK cibles.
 """
 
+import datetime
 import json
 import os
 import re
@@ -169,6 +170,77 @@ def frame(concept, unite, periode, s):
     return out
 
 
+def periode_instant(clot, annee):
+    """Frame instantanee qui porte le bilan de CLOTURE de l'exercice (audit M2).
+
+    Le bilan etait lu au 31 decembre pour tout le monde (`CY{annee}Q4I`) :
+    une societe qui clot en juin ou en septembre voyait ses flux d'un exercice
+    rapportes au bilan d'un autre, six ou trois mois plus loin — le ROIC du
+    screener divergeait de `dossier` pour Microsoft ou Visa. La cloture vient
+    du flux annuel du meme exercice ; sans elle, le 31 decembre reste le repli."""
+    if clot and len(clot) >= 7:
+        try:
+            y, m = int(clot[:4]), int(clot[5:7])
+            if 1 <= m <= 12:
+                return f"CY{y}Q{(m - 1) // 3 + 1}I"
+        except ValueError:
+            pass
+    return f"CY{annee}Q4I"
+
+
+def proche(fin, clot, jours=20):
+    """Un instant retenu doit tomber sur la cloture (exercices de 52/53
+    semaines compris). Sans cloture connue, aucune contrainte."""
+    if not clot or not fin:
+        return True
+    try:
+        ecart = datetime.date.fromisoformat(fin[:10]) - datetime.date.fromisoformat(clot[:10])
+    except ValueError:
+        return True
+    return abs(ecart.days) <= jours
+
+
+def collecter_annee(annee, par_cik, donnees, clotures, s, lire=None, pause=0.25):
+    """Flux d'abord (ils donnent la cloture), bilan ensuite, cale sur elle."""
+    lire = lire or frame
+
+    def verser(poste, f, ciks=None, controle=False):
+        for cik, (val, fin) in f.items():
+            if cik not in par_cik or (ciks is not None and cik not in ciks):
+                continue         # filtre immediat : la memoire ne garde que l'univers
+            if controle and not proche(fin, clotures.get(cik, {}).get(annee)):
+                s.compte("bilan_hors_cloture")
+                continue
+            d = donnees.setdefault(cik, {}).setdefault(annee, {})
+            if poste not in d:
+                d[poste] = val
+                if fin and not controle:
+                    clotures.setdefault(cik, {}).setdefault(annee, fin)
+
+    for poste, tags in DUREE.items():
+        unite = "shares" if poste == "shares" else "USD"
+        for tag in tags:
+            s.compte("appels_sec")
+            f = lire(tag, unite, f"CY{annee}", s)
+            time.sleep(pause)
+            if f:
+                verser(poste, f)
+
+    cibles = {}
+    for cik in par_cik:
+        cibles.setdefault(periode_instant(clotures.get(cik, {}).get(annee), annee), set()).add(cik)
+    decembre = f"CY{annee}Q4I"
+    s.compte("bilans_hors_decembre", sum(len(v) for k, v in cibles.items() if k != decembre))
+    for poste, tags in INSTANT.items():
+        for tag in tags:
+            for periode in sorted(cibles, key=lambda p: (p != decembre, p)):
+                s.compte("appels_sec")
+                f = lire(tag, "USD", periode, s)
+                time.sleep(pause)
+                if f:
+                    verser(poste, f, cibles[periode], controle=True)
+
+
 def num(v):
     if v is None:
         return "NULL"
@@ -204,23 +276,7 @@ def main():
     s.phase("frames")
     donnees, clotures = {}, {}
     for annee in EXERCICES:
-        for groupe, periode in ((DUREE, f"CY{annee}"), (INSTANT, f"CY{annee}Q4I")):
-            for poste, tags in groupe.items():
-                unite = "shares" if poste == "shares" else "USD"
-                for tag in tags:
-                    s.compte("appels_sec")
-                    f = frame(tag, unite, periode, s)
-                    time.sleep(0.25)
-                    if not f:
-                        continue
-                    for cik, (val, fin) in f.items():
-                        if cik not in par_cik:
-                            continue     # filtre immediat : la memoire ne
-                        d = donnees.setdefault(cik, {}).setdefault(annee, {})
-                        if poste not in d:        # garde l'univers entier
-                            d[poste] = val
-                            if fin and groupe is DUREE:
-                                clotures.setdefault(cik, {}).setdefault(annee, fin)
+        collecter_annee(annee, par_cik, donnees, clotures, s)
         print(f"  {annee} traite")
 
     s.phase("composition")
