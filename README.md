@@ -135,3 +135,12 @@ de branche). Les étapes planifiées lisent toujours `main`.
 Schéma réel dans `sql/001_schema.sql`. Chaque script crée lui-même les colonnes
 qu'il écrit. Budget d'écritures : `PLAFOND_ECRITURES` (100 000 lignes par jour
 sur le plan gratuit de D1, index compris).
+
+Colonnes et table **volontairement vides** — elles ne signalent pas une panne :
+
+- `metriques.per_median`, `metriques.ecart_multiple` : la médiane de multiple du
+  titre demanderait l'historique mensuel, et trier dessus serait circulaire
+  (c'est l'entrée même de la brique de multiple de l'ancrage propre).
+- `metriques.conversion_fcf_rn`, `metriques.dette_ebitda` : servis par le
+  serveur d'analyse (`dossier`), jamais par le crible.
+- table `presets` : les presets vivent dans le code du serveur (`screener`).
