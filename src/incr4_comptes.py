@@ -59,8 +59,12 @@ DUREE = {
             "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
     "capex": ["PaymentsToAcquirePropertyPlantAndEquipment",
               "PaymentsToAcquireProductiveAssets"],
+    # Troisieme tag, en dernier recours : Visa ne depose ses amortissements que
+    # sous DepreciationAndAmortization (2007-2025). Libelle SEC « nonproduction »
+    # : chez un industriel il peut exclure ce qui est loge dans le cout des ventes.
     "da": ["DepreciationDepletionAndAmortization",
-           "DepreciationAmortizationAndAccretionNet"],
+           "DepreciationAmortizationAndAccretionNet",
+           "DepreciationAndAmortization"],
     "sbc": ["ShareBasedCompensation"],
     "amortAcq": ["AmortizationOfIntangibleAssets"],
     "tax": ["IncomeTaxExpenseBenefit"],
