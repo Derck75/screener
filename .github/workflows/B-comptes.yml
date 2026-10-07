@@ -17,7 +17,7 @@ jobs:
   # FENETRE GLISSANTE (audit M8) : la liste d'exercices est calculee a chaque
   # passage. Ecrite en dur (2014-2025), elle n'aurait jamais lu 2026.
   fenetre:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       annees: ${{ steps.f.outputs.annees }}
     steps:
@@ -37,7 +37,7 @@ jobs:
           PY
 
   comptes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: fenetre
     timeout-minutes: 90
     strategy:
@@ -65,7 +65,7 @@ jobs:
         run: python src/incr4_comptes.py
 
   etat:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: comptes
     if: always()
     steps:

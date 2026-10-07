@@ -29,7 +29,7 @@ concurrency:
 
 jobs:
   garde:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       faire: ${{ steps.g.outputs.faire }}
     steps:
@@ -56,7 +56,7 @@ jobs:
           fi
 
   discord:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: garde
     if: needs.garde.outputs.faire == 'true'
     timeout-minutes: 15
