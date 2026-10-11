@@ -326,7 +326,8 @@ def main():
 
     s.phase("differentiel")
     a_ecrire = ecrire_differentiel("comptes2", "ticker || '|' || exercice",
-                                   rangs, COLONNES, s)
+                                   rangs, COLONNES, s,
+                                   par=("ticker", lambda k: k.rsplit("|", 1)[0]))
     if not a_ecrire:
         print("  rien a ecrire — comptes deja a jour")
         journal("OK", "incr4_comptes", 0, "VERT", "aucun changement", s.resume())
