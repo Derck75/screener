@@ -1,0 +1,41 @@
+name: V · tâches planifiées du serveur
+# Déclenché par le cron du worker `donnees-portefeuille` (plan gratuit) : il
+# exécute ici, avec le code déployé du worker, les tâches qui dépassent les
+# 10 ms de processeur de Cloudflare (cours, veille, alertes, krach, digest,
+# seuils, pont screener, historique hebdomadaire). Journaux muets.
+on:
+  workflow_dispatch:
+    inputs:
+      taches:
+        description: "Tâches, séparées par des virgules"
+        required: true
+      tick:
+        description: "Tick de 3 min qui a demandé le passage"
+        required: false
+        default: ""
+# Un ensemble de tâches à la fois ; un ensemble différent ne s'annule pas.
+concurrency:
+  group: horaire-${{ inputs.taches }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  horaire:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: src/lourd
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Tâches
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_KV_ID: ${{ secrets.CF_KV_ID }}
+          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
+          TACHES: ${{ inputs.taches }}
+          TICK: ${{ inputs.tick }}
+        run: node --no-warnings src/lourd/horaire.mjs > /dev/null 2>&1
