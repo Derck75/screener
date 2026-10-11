@@ -213,11 +213,16 @@ async function main() {
 
   phase("lecture comptes");
   const parTicker = {};
-  for (let p = 0; ; p++) {
-    const r = (await d1("SELECT * FROM comptes2 ORDER BY ticker, exercice LIMIT 5000 OFFSET ?",
-                        [p * 5000]))[0].results;
+  /* PAGINATION PAR CLÉ (11/10/2026) : OFFSET relit toutes les lignes sautées,
+     soit un coût quadratique en lignes lues ; la clé (ticker, exercice) suit
+     l'index et ne lit que la page. */
+  for (let der = null; ; ) {
+    const r = (der
+      ? await d1("SELECT * FROM comptes2 WHERE (ticker, exercice) > (?, ?) ORDER BY ticker, exercice LIMIT 5000", [der.ticker, der.exercice])
+      : await d1("SELECT * FROM comptes2 ORDER BY ticker, exercice LIMIT 5000"))[0].results;
     if (!r.length) break;
     for (const l of r) (parTicker[l.ticker] ||= []).push(l);
+    der = r[r.length - 1];
   }
   compte("societes", Object.keys(parTicker).length);
   console.log(`  ${Object.keys(parTicker).length} societes`);
@@ -617,11 +622,12 @@ async function main() {
   phase("differentiel");
   const cols = COLONNES.filter(c => c !== "maj");
   const existant = {};
-  for (let p = 0; ; p++) {
+  for (let der = null; ; ) {
     const r = (await d1(`SELECT ticker, ${cols.join(", ")} FROM metriques `
-                      + `ORDER BY ticker LIMIT 5000 OFFSET ?`, [p * 5000]))[0].results;
+                      + (der ? "WHERE ticker > ? " : "") + "ORDER BY ticker LIMIT 5000", der ? [der] : []))[0].results;
     if (!r.length) break;
     for (const l of r) existant[l.ticker] = l;
+    der = r[r.length - 1].ticker;
   }
   const pareil = (a, b) => cols.every(c => {
     const x = a[c], y = b[c];

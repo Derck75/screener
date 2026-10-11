@@ -208,7 +208,7 @@ def budget(besoin, table):
     return True
 
 
-def ecrire_differentiel(table, cle, rangs, colonnes, s=None):
+def ecrire_differentiel(table, cle, rangs, colonnes, s=None, par=None):
     """N'ecrit que ce qui a CHANGE.
 
     Les comptes annuels ne bougent que quatre fois par an : reecrire 23 000
@@ -217,17 +217,35 @@ def ecrire_differentiel(table, cle, rangs, colonnes, s=None):
 
     `rangs` : {cle: {colonne: valeur}}. Comparaison a 6 decimales — au-dela,
     un bruit d'arrondi ferait passer une ligne pour modifiee.
+
+    `par` = (colonne indexee, fonction cle -> valeur) : ne relit QUE les lignes
+    des valeurs concernees, par l'index. 11/10/2026 : la relecture integrale,
+    triee sur une expression (`ticker || '|' || exercice`) que l'index ne sert
+    pas, coutait la table entiere A CHAQUE PAGE — 58,5 M de lignes lues en
+    sept jours, 82 % du total du compte, au-dela de la limite gratuite de D1
+    (5 M/jour, appliquee depuis le 01/09/2026).
     """
-    existant, page = {}, 0
+    existant = {}
     cols = ", ".join(colonnes)
-    while True:
-        r = d1(f"SELECT {cle}, {cols} FROM {table} ORDER BY {cle} "
-               f"LIMIT 5000 OFFSET ?", [page * 5000])[0]["results"]
-        if not r:
-            break
-        for l in r:
-            existant[l[cle]] = l
-        page += 1
+    if par:
+        col, extraire = par
+        vals = sorted({extraire(k) for k in rangs})
+        for i in range(0, len(vals), 90):          # D1 : 100 parametres au plus
+            lot = vals[i:i + 90]
+            r = d1(f"SELECT {cle} AS k, {cols} FROM {table} WHERE {col} IN "
+                   f"({', '.join('?' * len(lot))})", lot)[0]["results"]
+            for l in r:
+                existant[l["k"]] = l
+    else:
+        page = 0
+        while True:
+            r = d1(f"SELECT {cle} AS k, {cols} FROM {table} ORDER BY {cle} "
+                   f"LIMIT 5000 OFFSET ?", [page * 5000])[0]["results"]
+            if not r:
+                break
+            for l in r:
+                existant[l["k"]] = l
+            page += 1
 
     def pareil(a, b):
         for c in colonnes:

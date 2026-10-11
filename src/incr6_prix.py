@@ -410,19 +410,18 @@ def main():
         sys.exit(1)
 
     # ---- nombre d'actions du dernier exercice : repli de capitalisation ----
-    vise = set(cibles)
+    # Lecture CIBLEE par l'index (ticker, exercice) : la pagination par OFFSET
+    # relisait toute la table pour n'en garder qu'une tranche (11/10/2026).
+    vise = sorted(set(cibles))
     actions_der = {}
-    page = 0
-    while True:
-        r = d1("SELECT ticker, exercice, shares FROM comptes2 "
-               "ORDER BY ticker, exercice LIMIT 5000 OFFSET ?", [page * 5000]
+    for i in range(0, len(vise), 90):
+        lot = vise[i:i + 90]
+        r = d1("SELECT ticker, exercice, shares FROM comptes2 WHERE ticker IN ("
+               + ", ".join("?" * len(lot)) + ") ORDER BY ticker, exercice", lot
                )[0]["results"]
-        if not r:
-            break
         for l in r:
-            if l["ticker"] in vise and l.get("shares"):
+            if l.get("shares"):
                 actions_der[l["ticker"]] = l["shares"]     # ordre croissant : le dernier gagne
-        page += 1
 
     # ---- cotations, depuis les listes ---------------------------------------
     s.phase("cotations")

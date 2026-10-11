@@ -487,7 +487,9 @@ def main():
 
     s.phase("differentiel")
     a_ecrire = (ecrire_differentiel("comptes2", "ticker || '|' || exercice",
-                                    rangs, COLONNES, s) if rangs else {})
+                                    rangs, COLONNES, s,
+                                    par=("ticker", lambda k: k.rsplit("|", 1)[0]))
+                if rangs else {})
     if a_ecrire:
         s.phase("ecriture")
         budget(len(a_ecrire), "comptes2")

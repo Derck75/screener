@@ -63,3 +63,4 @@ jobs:
           python tests/test_incr8.py
           python tests/test_incr8_libelles.py
           python tests/test_discord.py
+          python tests/test_differentiel.py
