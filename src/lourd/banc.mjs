@@ -69,7 +69,11 @@ async function executerAppel(W, kv, env, a, univ) {
 if (process.argv[2] === 'enfant') {
   try {
     const i = Number(process.argv[3]);
-    const src = fs.readFileSync(path.join(TMP, 'worker.js'), 'utf8');
+    /* Préchauffage des briques propres à Node (ICU, undici, Response) : leur
+       premier usage coûte 10-20 ms ici et n'a rien à voir avec le code du worker. */
+    new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' }); new Intl.NumberFormat('fr-FR').format(1.5);
+    await new Response(JSON.stringify({ a: 1 })).json(); await new Response('x').text(); new Headers({ a: 'b' }); new URL('https://a.b/c?d=e');
+    const src = fs.readFileSync(path.join(TMP, process.argv[4] === 'min' ? 'worker.min.js' : 'worker.js'), 'utf8');
     const dump = JSON.parse(fs.readFileSync(path.join(TMP, 'kv.json'), 'utf8'));
     const enr = JSON.parse(fs.readFileSync(path.join(TMP, 'reseau.json'), 'utf8'));
     const appels = JSON.parse(fs.readFileSync(path.join(TMP, 'appels.json'), 'utf8'));
@@ -96,6 +100,7 @@ const { telechargerWorker, KVRest } = await import('./lourd.mjs');
 fs.mkdirSync(TMP, { recursive: true });
 const src = await telechargerWorker();
 fs.writeFileSync(path.join(TMP, 'worker.js'), src);
+{ const esb = await import('esbuild'); fs.writeFileSync(path.join(TMP, 'worker.min.js'), esb.transformSync(src, { minifyWhitespace: true, legalComments: 'none', format: 'esm' }).code); }
 const rest = new KVRest(), cles = [];
 for (let cur; ;) { const r = await rest.list({ cursor: cur }); cles.push(...r.keys.map(k => k.name)); if (r.list_complete) break; cur = r.cursor; }
 const dump = {};
@@ -120,15 +125,17 @@ globalThis.fetch = async (u, init) => {
 { const kv = new KV(new Map(Object.entries(dump))), env = { PF: kv }; for (const a of appels) { try { W.reinitialiserCompteur(); await executerAppel(W, kv, env, a, univ); } catch { } } }
 fs.writeFileSync(path.join(TMP, 'reseau.json'), JSON.stringify(enr));
 globalThis.fetch = vraiFetch;
-// mesure à froid, un processus par appel
+// mesure à froid, un processus par appel, pour chaque variante du source
 const R = [];
-for (let i = 0; i < appels.length; i++) {
-  const p = spawnSync(process.execPath, ['--no-warnings', url.fileURLToPath(import.meta.url), 'enfant', String(i)], { encoding: 'utf8', timeout: 120000, maxBuffer: 1 << 20 });
+const tailleMin = fs.statSync(path.join(TMP, 'worker.min.js')).size, tailleOrig = fs.statSync(path.join(TMP, 'worker.js')).size;
+for (const variante of ['orig', 'min']) for (let i = 0; i < appels.length; i++) {
+  const p = spawnSync(process.execPath, ['--no-warnings', url.fileURLToPath(import.meta.url), 'enfant', String(i), variante], { encoding: 'utf8', timeout: 120000, maxBuffer: 1 << 20 });
   let o; try { o = JSON.parse(p.stdout); } catch { o = { froid: { ms: -1, ok: 0, err: 'sortie illisible' } }; }
   const a = appels[i];
-  const nom = a.type === 'outil' ? `outil:${a.nom}:${JSON.stringify(a.args).replace(/"lignes":\[[^\]]*\]/, '"lignes":[…]').slice(0, 60)}` : (a.nom === 'job' ? `cron:job:${a.jt}:${a.t}` : `cron:${a.nom}${a.lot ? ':' + a.lot.length : ''}`);
+  const nom = (variante === 'min' ? 'MIN|' : '') + (a.type === 'outil' ? `outil:${a.nom}:${JSON.stringify(a.args).replace(/"lignes":\[[^\]]*\]/, '"lignes":[…]').slice(0, 60)}` : (a.nom === 'job' ? `cron:job:${a.jt}:${a.t}` : `cron:${a.nom}${a.lot ? ':' + a.lot.length : ''}`));
   R.push({ nom, froid: o.froid && o.froid.ms, chaud: o.chaud && o.chaud.ms, ok: o.froid && o.froid.ok, err: (o.froid && o.froid.err) || null, rates: o.rates || 0, servis: o.servis || 0, ecr: o.ecr || 0 });
 }
+R.push({ nom: `TAILLES orig ${tailleOrig} min ${tailleMin}`, froid: 0, chaud: 0, ok: 1, err: null, rates: 0, servis: 0, ecr: 0 });
 await d1("DROP TABLE IF EXISTS banc_cpu");
 await d1("CREATE TABLE banc_cpu (id INTEGER PRIMARY KEY AUTOINCREMENT, quand TEXT, version TEXT, nom TEXT, froid REAL, chaud REAL, ok INTEGER, err TEXT, rates INTEGER, servis INTEGER, ecr INTEGER)");
 const quand = new Date().toISOString(), ver = W.WORKER_VERSION || '?';
