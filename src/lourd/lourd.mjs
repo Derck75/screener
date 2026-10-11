@@ -111,16 +111,27 @@ export function extraireModule(txt, contentType) {
   throw new Error('aucune partie JavaScript dans le contenu du script');
 }
 
+/* PLAN GRATUIT (w200) : l'adresse MCP `donnees-portefeuille` peut porter la
+   PORTE (quelques lignes de transmission) ; le code de calcul est publié à
+   part sous `donnees-portefeuille-coeur`. On lit le cœur d'abord, puis le
+   worker principal, et on n'accepte qu'un code qui EST le cœur. */
+const NOM_COEUR = () => ENV.COEUR_NOM || 'donnees-portefeuille-coeur';
+export const estLeCoeur = src => /async function appeler\(/.test(src || '');
+
 export async function telechargerWorker() {
   if (ENV.WORKER_FICHIER) return fs.readFileSync(ENV.WORKER_FICHIER, 'utf8');
   let dernier = 0;
-  for (const chemin of [`/workers/scripts/${NOM_WORKER()}/content/v2`, `/workers/scripts/${NOM_WORKER()}`]) {
-    const r = await avecReprise(() => fetch(api(chemin), { headers: AUTH() }));
-    dernier = r.status;
-    if (!r.ok) continue;
-    return extraireModule(await r.text(), r.headers.get('content-type'));
+  for (const nom of [...new Set([NOM_COEUR(), NOM_WORKER()])]) {
+    for (const chemin of [`/workers/scripts/${nom}/content/v2`, `/workers/scripts/${nom}`]) {
+      const r = await avecReprise(() => fetch(api(chemin), { headers: AUTH() }));
+      dernier = r.status;
+      if (!r.ok) continue;
+      const src = extraireModule(await r.text(), r.headers.get('content-type'));
+      if (estLeCoeur(src)) return src;
+      break;
+    }
   }
-  throw new Error(`code du worker illisible (HTTP ${dernier}) — le jeton doit porter « Workers Scripts : lecture »`);
+  throw new Error(`code du cœur illisible (HTTP ${dernier}) — le jeton doit porter « Workers Scripts : lecture »`);
 }
 
 /* `true` / `false` d'après la variable `LOURD` du worker ; `null` si les
