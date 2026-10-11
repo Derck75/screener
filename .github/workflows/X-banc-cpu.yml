@@ -1,0 +1,27 @@
+name: X · banc CPU (temporaire)
+# Mesure le temps processeur des outils et des tâches du worker déployé, sur
+# une copie en mémoire du KV. Résultats en D1 (privé) ; journaux : des comptes.
+on:
+  push:
+    branches: [banc-cpu]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  banc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: src/lourd
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Banc
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_KV_ID: ${{ secrets.CF_KV_ID }}
+          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
+        run: node --no-warnings src/lourd/banc.mjs > /dev/null 2>&1
