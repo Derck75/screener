@@ -117,8 +117,8 @@ const d1 = async (sql, params = []) => { const r = await vraiFetch(D1, { method:
 await d1("CREATE TABLE IF NOT EXISTS banc_cpu (id INTEGER PRIMARY KEY AUTOINCREMENT, quand TEXT, version TEXT, nom TEXT, ms REAL, mur INTEGER, ok INTEGER, err TEXT)");
 await d1("DELETE FROM banc_cpu");
 const quand = new Date().toISOString(), ver = W.WORKER_VERSION || '?';
-for (let k = 0; k < R.length; k += 20) {
-  const lot = R.slice(k, k + 20);
+for (let k = 0; k < R.length; k += 14) {
+  const lot = R.slice(k, k + 14);
   await d1("INSERT INTO banc_cpu (quand, version, nom, ms, mur, ok, err) VALUES " + lot.map(() => "(?, ?, ?, ?, ?, ?, ?)").join(", "), lot.flatMap(r => [quand, ver, r.nom, r.ms, r.mur, r.ok ? 1 : 0, r.err]));
 }
 console.log(`${R.length} mesures écrites, ${R.filter(r => r.ms > 10).length} au-dessus de 10 ms, ${rates} rejeux absents`);
