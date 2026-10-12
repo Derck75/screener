@@ -51,9 +51,22 @@ ok(("Assets", "CY2023Q2I") in lus, "frame du deuxieme trimestre lue")
 ok(s.compteurs.get("bilans_hors_decembre") == 1, "un bilan hors decembre compte")
 
 ok(I4.periode_instant("2023-09-30", 2023) == "CY2023Q3I", "septembre -> T3")
-ok(I4.periode_instant("2024-01-28", 2023) == "CY2024Q1I", "exercice clos fin janvier -> T1 de l'annee suivante")
+ok(I4.periode_instant("2024-01-28", 2023) == "CY2023Q4I", "exercice clos fin janvier -> T4 de l'annee civile precedente (verifie SEC : NVIDIA)")
+ok(I4.periode_instant("2026-01-25", 2025) == "CY2025Q4I", "NVIDIA FY2026 (25/01/2026) -> CY2025Q4I")
+ok(I4.periode_instant("2025-04-27", 2025) == "CY2025Q1I", "fin avril -> T1 (31/03 le plus proche)")
+ok(I4.periode_instant("2025-11-02", 2025) == "CY2025Q3I", "debut novembre -> T3 (30/09 a 33 j, 31/12 a 59 j)")
+ok(I4.periode_instant("2025-06-27", 2025) == "CY2025Q2I" and I4.periode_instant("2025-09-27", 2025) == "CY2025Q3I", "fins de semaine pres de juin et septembre")
 ok(I4.periode_instant(None, 2023) == "CY2023Q4I", "sans cloture -> 31/12")
 ok(I4.proche("2023-07-01", "2023-06-30") and not I4.proche("2023-12-31", "2023-06-30"),
    "un instant a six mois de la cloture est refuse")
+
+# Deposant qui clot fin janvier : flux CY2023 (fin 2024-01-28), bilan dans CY2023Q4I.
+FRAMES[("Revenues", "CY2023")][4] = (60.0, "2024-01-28")
+FRAMES[("Assets", "CY2023Q4I")][4] = (65.0, "2024-01-28")
+FRAMES[("Assets", "CY2024Q1I")] = {4: (77.0, "2024-04-28")}
+par_cik[4] = ("NVDA", None)
+donnees, clotures, s = {}, {}, Sonde()
+I4.collecter_annee(2023, par_cik, donnees, clotures, s, lire=lire, pause=0)
+ok(donnees[4][2023].get("assets") == 65.0, "cloture fin janvier : bilan du 28/01 lu (et non vide)")
 
 sys.exit(1 if ECHECS else 0)

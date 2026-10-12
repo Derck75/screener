@@ -181,12 +181,25 @@ def periode_instant(clot, annee):
     une societe qui clot en juin ou en septembre voyait ses flux d'un exercice
     rapportes au bilan d'un autre, six ou trois mois plus loin — le ROIC du
     screener divergeait de `dossier` pour Microsoft ou Visa. La cloture vient
-    du flux annuel du meme exercice ; sans elle, le 31 decembre reste le repli."""
-    if clot and len(clot) >= 7:
+    du flux annuel du meme exercice ; sans elle, le 31 decembre reste le repli.
+
+    CORRIGE LE 12/10/2026 — FIN DE TRIMESTRE LA PLUS PROCHE, PAS LE TRIMESTRE
+    DU MOIS. La SEC range un instant dans la frame dont la fin de trimestre
+    calendaire est la PLUS PROCHE (verifie sur NVIDIA : bilan du 25/01/2026
+    dans CY2025Q4I, pas CY2026Q1I). Prendre le trimestre du mois de cloture
+    envoyait toute cloture de debut de trimestre (janvier, avril, juillet,
+    octobre : NVIDIA, les distributeurs americains) lire la frame suivante,
+    ou le controle de 20 jours rejetait tout : bilans vides depuis le 03/10,
+    NVIDIA exclue en « incomplet », canari perdu, prix et valorisation du
+    screener a l'arret."""
+    if clot and len(clot) >= 10:
         try:
-            y, m = int(clot[:4]), int(clot[5:7])
-            if 1 <= m <= 12:
-                return f"CY{y}Q{(m - 1) // 3 + 1}I"
+            d = datetime.date.fromisoformat(clot[:10])
+            fins = [datetime.date(d.year - 1, 12, 31), datetime.date(d.year, 3, 31),
+                    datetime.date(d.year, 6, 30), datetime.date(d.year, 9, 30),
+                    datetime.date(d.year, 12, 31)]
+            f = min(fins, key=lambda x: abs((x - d).days))
+            return f"CY{f.year}Q{(f.month - 1) // 3 + 1}I"
         except ValueError:
             pass
     return f"CY{annee}Q4I"
