@@ -100,6 +100,13 @@ jobs:
           r = q("SELECT COUNT(*) AS n FROM (SELECT ticker FROM comptes2 "
                 "GROUP BY ticker HAVING COUNT(*) >= 10)")[0]["n"]
           print(f"\n  societes a 10 exercices ou plus : {r}")
+          # Couverture par poste, UNE fois pour toute la matrice (elle etait
+          # refaite par chacun des douze jobs : 24 balayages de comptes2).
+          cols = ["revenue", "netIncome", "ebit", "cfo", "capex", "assets", "equity", "debt", "cash", "shares"]
+          c = q("SELECT COUNT(*) AS tot, " + ", ".join(f"SUM(CASE WHEN {x} IS NOT NULL THEN 1 ELSE 0 END) AS {x}" for x in cols) + " FROM comptes2")[0]
+          print(f"\nCOUVERTURE PAR POSTE ({c['tot']} lignes)")
+          for x in cols:
+              print(f"  {x:10} {round(100 * (c[x] or 0) / max(1, c['tot']), 1):5} %")
           print("  C'est le seuil du filtre dur : en dessous, aucun verdict ferme")
           print("  sur la durabilite du moat n'est publiable.")
           PY

@@ -366,20 +366,26 @@ def main():
         if ecrites % 2000 == 0 or ecrites == len(valeurs):
             print(f"  ecrit {ecrites}/{len(valeurs)}")
 
-    s.phase("rapport")
-    tot = d1("SELECT COUNT(*) AS n FROM comptes2")[0]["results"][0]["n"]
-    print(f"\n--- RAPPORT ---\nlignes en base : {tot}")
-    couv = d1("SELECT COUNT(*) AS tot, " + ", ".join(
-        f"SUM(CASE WHEN {c} IS NOT NULL THEN 1 ELSE 0 END) AS {c}"
-        for c in COLONNES if c != "flottant") + " FROM comptes2")[0]["results"][0]
-    t = max(1, couv["tot"])
-    for c in COLONNES:
-        if c != "flottant":
-            print(f"  {c:14} {round(100 * (couv[c] or 0) / t, 1):5} %")
+    # RAPPORT DE COUVERTURE — deux lectures integrales de comptes2. En matrice
+    # (EXERCICES pose, douze jobs), il etait refait par CHAQUE job : 24 balayages
+    # de la table, 2 M de lignes lues le 12/10 sur un plafond D1 gratuit de
+    # 5 M/jour. Le job `etat` du workflow le fait une fois, apres la matrice.
+    tot = None
+    if not os.environ.get("EXERCICES"):
+        s.phase("rapport")
+        tot = d1("SELECT COUNT(*) AS n FROM comptes2")[0]["results"][0]["n"]
+        print(f"\n--- RAPPORT ---\nlignes en base : {tot}")
+        couv = d1("SELECT COUNT(*) AS tot, " + ", ".join(
+            f"SUM(CASE WHEN {c} IS NOT NULL THEN 1 ELSE 0 END) AS {c}"
+            for c in COLONNES if c != "flottant") + " FROM comptes2")[0]["results"][0]
+        t = max(1, couv["tot"])
+        for c in COLONNES:
+            if c != "flottant":
+                print(f"  {c:14} {round(100 * (couv[c] or 0) / t, 1):5} %")
 
     r = s.afficher()
     journal("OK", "incr4_comptes", ecrites, "VERT",
-            f"{ecrites} lignes ecrites, {tot} en base", r)
+            f"{ecrites} lignes ecrites" + (f", {tot} en base" if tot is not None else ""), r)
     print("OK")
 
 
