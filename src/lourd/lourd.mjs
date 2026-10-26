@@ -219,6 +219,20 @@ function compte(B, k, n = 1) { B.compteurs[k] = (B.compteurs[k] || 0) + n; }
 function erreur(B, etape, ticker, e) { B.erreurs.push({ quand: new Date().toISOString(), etape, ticker, message: String(e && e.message || e).slice(0, 300) }); }
 const ageJours = d => { const t = d ? Date.parse(String(d).replace(' UTC', 'Z').replace(' ', 'T')) : NaN; return Number.isFinite(t) ? (Date.now() - t) / 86400000 : Infinity; };
 
+/* ── Écriture sans régression (27/10/2026) ──────────────────────────────
+   Un échec de relecture ne remplace JAMAIS une donnée valide. `construireSA`,
+   `construireEdgar` et `construireEsef` rendent en échec un objet
+   {statut:"KO"} sans séries : écrit tel quel, il effaçait des comptes valides
+   — pour Rheinmetall, CTS Eventim ou Siemens Healthineers, StockAnalysis est
+   la source profonde principale. Le résultat valide précédent est conservé,
+   annoté de la tentative ratée ; la relecture se retente au passage suivant. */
+export function choisirEcriture(nouveau, ancien) {
+  const ok = x => !!(x && x.statut === 'OK');
+  if (ok(nouveau) || !ok(ancien)) return { valeur: nouveau, conserve: false };
+  const motif = nouveau && (nouveau.erreur || nouveau.cause || nouveau.motif) || 'relecture sans résultat';
+  return { valeur: Object.assign({}, ancien, { relectureKO: { quand: new Date().toISOString(), motif: String(motif).slice(0, 200) } }), conserve: true };
+}
+
 /* ── Travaux par société ───────────────────────────────────────────────── */
 const EDGAR_VALIDITE_J = 7;
 const SA_VALIDITE_J = 30;
@@ -235,8 +249,9 @@ async function edgar(W, kv, e, B, force) {
       /* Même sémantique que `rafraichir` : `force` ou lot périmé repartent de
          zéro ; un lot seulement incomplet garde la mémoire de ses tentatives. */
       const res = await W.construireEdgar(e.sec, kv, lot, nom, null, (force || vieux) ? null : prec);
-      await kv.put(nom + ':' + e.yahoo, JSON.stringify(res), { expirationTtl: 2592000 });
-      compte(B, res && res.statut === 'OK' ? 'edgar_lots_ecrits' : 'edgar_lots_ko');
+      const ch = choisirEcriture(res, prec);
+      await kv.put(nom + ':' + e.yahoo, JSON.stringify(ch.valeur), { expirationTtl: 2592000 });
+      compte(B, res && res.statut === 'OK' ? 'edgar_lots_ecrits' : ch.conserve ? 'edgar_ko_conserve' : 'edgar_lots_ko');
     } catch (err) { compte(B, 'edgar_erreurs'); erreur(B, 'edgar ' + nom, e.yahoo, err); }
   }
 }
@@ -255,9 +270,12 @@ async function esef(W, kv, e, B, force) {
       if (trace === avant) { compte(B, 'esef_sans_progres'); return; }
       avant = trace;
       W.reinitialiserCompteur();
-      const r = await W.construireEsef(e, kv, { lots: 4 });
+      const r0 = await W.construireEsef(e, kv, { lots: 4 });
+      const ch = choisirEcriture(r0, cur);
+      const r = ch.valeur;
       await kv.put('esef:' + e.yahoo, JSON.stringify(r), { expirationTtl: 7776000 });
       compte(B, 'esef_passages');
+      if (ch.conserve) { compte(B, 'esef_ko_conserve'); return; }
       if (r && r.complet) { compte(B, 'esef_completes'); return; }
       /* Découverte refusée par le réseau : réessayer dans la minute ne sert à
          rien, le passage de demain le fera. */
@@ -275,8 +293,9 @@ async function stockanalysis(W, kv, e, B, force) {
     if (!force && cur && cur.horodatage && ageJours(cur.horodatage) <= validite) { compte(B, 'sa_a_jour'); return; }
     W.reinitialiserCompteur();
     const r = await W.construireSA(e, kv);
-    await kv.put('sa:' + e.yahoo, JSON.stringify(r), { expirationTtl: 5184000 });
-    compte(B, r && r.statut === 'OK' ? 'sa_ecrits' : 'sa_ko');
+    const ch = choisirEcriture(r, cur);
+    await kv.put('sa:' + e.yahoo, JSON.stringify(ch.valeur), { expirationTtl: 5184000 });
+    compte(B, r && r.statut === 'OK' ? 'sa_ecrits' : ch.conserve ? 'sa_ko_conserve' : 'sa_ko');
     await attendre(Number(ENV.PAUSE_SA_MS ?? 1200));   // courtoisie envers la source
   } catch (err) { compte(B, 'sa_erreurs'); erreur(B, 'sa', e.yahoo, err); }
 }
