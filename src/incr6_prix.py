@@ -197,13 +197,22 @@ def chart(sym):
 
 
 def lire_liste(url, s):
+    # 26/10/2026 — TROIS ESSAIS. Un seul refus passager de StockAnalysis faisait
+    # perdre une liste entiere (nasdaq au premier passage, nyse au second ce
+    # jour-la) ; la purge des cours perimes effacait ensuite 1 645 cours
+    # americains valides. Pause croissante : 3 s puis 8 s.
     req = urllib.request.Request(url, headers={"User-Agent": UA})
-    try:
-        with urllib.request.urlopen(req, timeout=45) as r:
-            return r.read().decode("utf-8", "replace")
-    except Exception as e:
-        s.erreur("liste_sa", f"{type(e).__name__} {url[-30:]}")
-        return None
+    derniere = None
+    for essai in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=45) as r:
+                return r.read().decode("utf-8", "replace")
+        except Exception as e:
+            derniere = e
+            if essai < 2:
+                time.sleep(3 if essai == 0 else 8)
+    s.erreur("liste_sa", f"{type(derniere).__name__} {url[-30:]}")
+    return None
 
 
 PAGINATIONS = ["?p={n}", "?page={n}", "?r=500&p={n}"]
@@ -275,6 +284,34 @@ def pages_liste(chemin, s):
     return pages
 
 
+# Listes non lues au dernier passage : (chemin, suffixe). Une place dont UNE
+# liste manque n'est pas « lue » — voir la purge des cours perimes.
+LISTES_KO = []
+
+
+def places_purgeables(table, cibles, listes_ko, seuil=0.8):
+    """Places dont on peut effacer les cours manquants sans risque.
+
+    🔴 26/10/2026. La purge exigeait seulement qu'UN cours de la place ait ete
+    lu. Les Etats-Unis passent par trois listes : nasdaq lue, nyse refusee,
+    la place « » etait declaree lue et 1 645 cours valides du NYSE ont ete mis
+    a NULL — la valorisation est tombee de 5 967 a 4 362 societes. Deux gardes :
+      1. toutes les listes de la place ont ete lues ;
+      2. au moins 80 % des cibles de la place ont un cours dans ce passage —
+         une radiation touche quelques titres, jamais un cinquieme d'une place.
+    """
+    suff = lambda t: ("." + t.rsplit(".", 1)[1]) if "." in t else ""
+    ko = {sx for _, sx in listes_ko}
+    par = {}
+    for t in cibles:
+        par.setdefault(suff(t), [0, 0])
+        par[suff(t)][0] += 1
+        if t.upper() in table:
+            par[suff(t)][1] += 1
+    lues = {suff(k) for k in table}
+    return {p for p, (n, ok) in par.items() if p in lues and p not in ko and n and ok / n >= seuil}
+
+
 def cours_depuis_listes(s):
     """Rend {ticker: (cours, capitalisation)} pour tout le panel americain.
 
@@ -287,9 +324,11 @@ def cours_depuis_listes(s):
     construction, quelle que soit leur valeur reelle.
     """
     out = {}
+    LISTES_KO.clear()
     for chemin, suffixe in [(c, "") for c in LISTES_US] + LISTES_INTL:
         pages = pages_liste(chemin, s)
         if not pages:
+            LISTES_KO.append((chemin, suffixe))
             continue
         html = "".join(pages)
         ent = [re.sub(r"<[^>]+>", " ", h).strip().lower()
@@ -300,6 +339,7 @@ def cours_depuis_listes(s):
                      if l.strip() in ("price", "stock price")), None)
         if i_sym is None or i_px is None:
             s.erreur("entetes_liste", f"{chemin} : {ent[:6]}")
+            LISTES_KO.append((chemin, suffixe))
             continue
         n = 0
         for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S):
@@ -512,9 +552,14 @@ def main():
     # ---- cours perimes -------------------------------------------------------
     # Une societe radiee gardait son dernier cours, et avec lui une decote qui
     # n'existe plus. Garde : seulement si la liste de SA place a ete lue.
-    places_lues = {("." + k.rsplit(".", 1)[1]) if "." in k else "" for k in table}
+    places_ok = places_purgeables(table, cibles, LISTES_KO)
     purges = [t for t in perimes
-              if (("." + t.rsplit(".", 1)[1]) if "." in t else "") in places_lues]
+              if (("." + t.rsplit(".", 1)[1]) if "." in t else "") in places_ok]
+    epargnes = len(perimes) - len(purges)
+    if epargnes:
+        print(f"  {epargnes} cours conserves : place incomplete ce passage "
+              f"({', '.join(c for c, _ in LISTES_KO) or 'couverture < 80 %'})")
+        s.compte("cours_epargnes", epargnes)
     for i in range(0, len(purges), 40):
         lot = purges[i:i + 40]
         d1("UPDATE metriques SET cours = NULL, epv_sur_cours = NULL, "
@@ -527,9 +572,11 @@ def main():
         s.compte("cours_perimes", len(purges))
 
     s.afficher()
+    ko_txt = f" · listes illisibles : {', '.join(c for c, _ in LISTES_KO)}" if LISTES_KO else ""
     journal("OK", f"incr6_prix_t{a.tranche}", ecrites, "VERT",
-            f"{ecrites} cotations, {echecs} sans cours",
-            {"cibles": len(cibles), "ecrites": ecrites, "echecs": echecs})
+            f"{ecrites} cotations, {echecs} sans cours{ko_txt}",
+            {"cibles": len(cibles), "ecrites": ecrites, "echecs": echecs,
+             "listes_ko": [c for c, _ in LISTES_KO], "epargnes": epargnes})
     print("OK")
 
 
