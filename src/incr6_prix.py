@@ -527,8 +527,16 @@ def main():
         msg = (f"canari rouge : {CANARI_TICKER} = {cours_canari}, "
                f"{len(maj)}/{len(cibles)} cotations")
         print("PANNE : " + msg)
-        s.afficher()
-        journal("PANNE", f"incr6_prix_t{a.tranche}", 0, "ROUGE", msg)
+        r = s.afficher()
+        # 26/10/2026 — la CAUSE va dans la base, pas seulement dans le journal
+        # GitHub (illisible depuis le serveur) : listes refusees et exemple
+        # d'erreur par categorie. Sans elle, « canari rouge » ne dit pas
+        # quelle liste StockAnalysis a manque, ni pourquoi.
+        if LISTES_KO:
+            msg += " · listes illisibles : " + ", ".join(c for c, _ in LISTES_KO)
+        journal("PANNE", f"incr6_prix_t{a.tranche}", 0, "ROUGE", msg,
+                {"listes_ko": [c for c, _ in LISTES_KO], "erreurs": r.get("erreurs", {}),
+                 "compteurs": r.get("compteurs", {})})
         sys.exit(1)
 
     # ---- ecriture, par lots (UPSERT : seules ces colonnes sont touchees) -----
