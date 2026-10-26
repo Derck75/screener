@@ -300,7 +300,7 @@ def pages_liste(chemin, s):
 # complete et la plus stable disponible sans abonnement. Elle devient la
 # source PRIMAIRE des places americaines ; StockAnalysis la complete (et reste
 # primaire hors des Etats-Unis). Les deux sont RECOUPEES sur les societes
-# communes : un ecart median au-dela de 2 % signale une erreur d'unite ou de
+# communes : un ecart median au-dela de 5 % signale une erreur d'unite ou de
 # symbole avant qu'elle n'entre dans une valorisation.
 NASDAQ_API = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&download=true"
 NASDAQ_ENTETES = {"Accept": "application/json, text/plain, */*", "Accept-Language": "en-US,en;q=0.9",
@@ -531,7 +531,10 @@ def main():
                     "couverture_us_nasdaq": round(couv_nq, 3), "communs": n_com,
                     "ecart_median": None if ecart_med is None else round(ecart_med, 4),
                     "part_ecart_5pc": None if part_ecart is None else round(part_ecart, 3)})
-    if couv_nq >= 0.5 and (ecart_med is None or ecart_med <= 0.02):
+    # Seuil a 5 % (27/10/2026) : les deux sources ne relevent pas leurs cours
+    # a la meme heure (1 % d'ecart median le 26/10, davantage un jour agite) ;
+    # une erreur d'unite ou de symbole, elle, se compte en dizaines de %.
+    if couv_nq >= 0.5 and (ecart_med is None or ecart_med <= 0.05):
         # Nasdaq primaire aux Etats-Unis ; la capitalisation de StockAnalysis
         # ne comble que l'absence de celle de Nasdaq.
         for k, (px, cap) in nq.items():
