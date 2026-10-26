@@ -207,6 +207,12 @@ def lire_liste(url, s):
         try:
             with urllib.request.urlopen(req, timeout=45) as r:
                 return r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            derniere = e
+            if e.code == 404:          # page au-dela de la fin : rien a retenter
+                break
+            if essai < 2:
+                time.sleep(3 if essai == 0 else 8)
         except Exception as e:
             derniere = e
             if essai < 2:
@@ -284,35 +290,81 @@ def pages_liste(chemin, s):
     return pages
 
 
+# ---- COURS AMERICAINS : API DE L'ECRAN NASDAQ (27/10/2026) -----------------
+# Le 26/10, StockAnalysis a cesse de servir ses listes americaines en entier
+# (pagination incoherente, 404 au-dela de quelques pages) : 1 664 societes sur
+# 6 027 sans cours. Mesure depuis GitHub (diag_sources.py) : l'API de l'ecran
+# de Nasdaq Inc. rend en UNE requete de 2 Mo et 3 s les 6 938 actions cotees
+# au NYSE, au Nasdaq et au NYSE American, chacune avec son dernier cours et sa
+# capitalisation. C'est l'operateur de marche lui-meme : la source la plus
+# complete et la plus stable disponible sans abonnement. Elle devient la
+# source PRIMAIRE des places americaines ; StockAnalysis la complete (et reste
+# primaire hors des Etats-Unis). Les deux sont RECOUPEES sur les societes
+# communes : un ecart median au-dela de 2 % signale une erreur d'unite ou de
+# symbole avant qu'elle n'entre dans une valorisation.
+NASDAQ_API = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&download=true"
+NASDAQ_ENTETES = {"Accept": "application/json, text/plain, */*", "Accept-Language": "en-US,en;q=0.9",
+                  "Origin": "https://www.nasdaq.com", "Referer": "https://www.nasdaq.com/"}
+
+
+def nombre(txt):
+    try:
+        v = float(str(txt).replace("$", "").replace(",", "").strip())
+        return v if v > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def lire_nasdaq(rows):
+    """{ticker: (cours, capitalisation)} depuis les lignes de l'API.
+    Classes d'actions : « BRK/B » devient « BRK-B », comme dans la base.
+    Preferentielles et droits (« ^ ») ignores : ils ne sont pas des cibles."""
+    out = {}
+    for r in rows or []:
+        sym = str(r.get("symbol") or "").strip().upper()
+        if not sym or "^" in sym or " " in sym:
+            continue
+        px = nombre(r.get("lastsale"))
+        if px is None:
+            continue
+        out[sym.replace("/", "-").replace(".", "-")] = (px, nombre(r.get("marketCap")))
+    return out
+
+
+def cours_nasdaq(s):
+    req = urllib.request.Request(NASDAQ_API, headers=dict(NASDAQ_ENTETES, **{"User-Agent": UA}))
+    for essai in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=90) as r:
+                j = json.loads(r.read().decode("utf-8", "replace"))
+            out = lire_nasdaq(((j.get("data") or {}).get("rows")) or [])
+            print(f"  nasdaq (API ecran) : {len(out)} cours americains")
+            return out
+        except Exception as e:
+            s.erreur("nasdaq_api", f"{type(e).__name__} {str(e)[:80]}")
+            if essai < 2:
+                time.sleep(5 * (essai + 1))
+    return {}
+
+
+def recouper(a, b, seuil=0.05):
+    """Ecart relatif entre deux sources sur les symboles communs :
+    (n communs, ecart median, part au-dela du seuil)."""
+    ec = sorted(abs(a[k][0] - b[k][0]) / b[k][0] for k in set(a) & set(b) if b[k][0])
+    if not ec:
+        return 0, None, None
+    return len(ec), ec[len(ec) // 2], sum(1 for e in ec if e > seuil) / len(ec)
+
+
+PURGE_JOURS = 10
+SOURCES = {}
+
 # Listes non lues au dernier passage : (chemin, suffixe). Une place dont UNE
 # liste manque n'est pas « lue » — voir la purge des cours perimes.
 LISTES_KO = []
 # Pages et cours lus par liste au dernier passage : ecrits dans la base, pour
 # qu'une couverture qui s'effondre se lise sans le journal GitHub.
 LISTES_N = {}
-
-
-def places_purgeables(table, cibles, listes_ko, seuil=0.8):
-    """Places dont on peut effacer les cours manquants sans risque.
-
-    🔴 26/10/2026. La purge exigeait seulement qu'UN cours de la place ait ete
-    lu. Les Etats-Unis passent par trois listes : nasdaq lue, nyse refusee,
-    la place « » etait declaree lue et 1 645 cours valides du NYSE ont ete mis
-    a NULL — la valorisation est tombee de 5 967 a 4 362 societes. Deux gardes :
-      1. toutes les listes de la place ont ete lues ;
-      2. au moins 80 % des cibles de la place ont un cours dans ce passage —
-         une radiation touche quelques titres, jamais un cinquieme d'une place.
-    """
-    suff = lambda t: ("." + t.rsplit(".", 1)[1]) if "." in t else ""
-    ko = {sx for _, sx in listes_ko}
-    par = {}
-    for t in cibles:
-        par.setdefault(suff(t), [0, 0])
-        par[suff(t)][0] += 1
-        if t.upper() in table:
-            par[suff(t)][1] += 1
-    lues = {suff(k) for k in table}
-    return {p for p, (n, ok) in par.items() if p in lues and p not in ko and n and ok / n >= seuil}
 
 
 def cours_depuis_listes(s):
@@ -470,6 +522,28 @@ def main():
     # ---- cotations, depuis les listes ---------------------------------------
     s.phase("cotations")
     table = cours_depuis_listes(s)
+    sa_us = {k: v for k, v in table.items() if "." not in k}
+    nq = cours_nasdaq(s)
+    cibles_us = [t for t in cibles if "." not in t]
+    couv_nq = sum(1 for t in cibles_us if t.upper() in nq) / max(1, len(cibles_us))
+    n_com, ecart_med, part_ecart = recouper(nq, sa_us)
+    SOURCES.update({"nasdaq": len(nq), "stockanalysis_us": len(sa_us),
+                    "couverture_us_nasdaq": round(couv_nq, 3), "communs": n_com,
+                    "ecart_median": None if ecart_med is None else round(ecart_med, 4),
+                    "part_ecart_5pc": None if part_ecart is None else round(part_ecart, 3)})
+    if couv_nq >= 0.5 and (ecart_med is None or ecart_med <= 0.02):
+        # Nasdaq primaire aux Etats-Unis ; la capitalisation de StockAnalysis
+        # ne comble que l'absence de celle de Nasdaq.
+        for k, (px, cap) in nq.items():
+            cap_sa = table.get(k, (None, None))[1]
+            table[k] = (px, cap or cap_sa)
+        print(f"  Nasdaq primaire : couverture americaine {couv_nq:.0%}, "
+              f"ecart median {0 if ecart_med is None else ecart_med:.2%} sur {n_com} communs")
+    else:
+        s.erreur("nasdaq_ecarte", f"couverture {couv_nq:.0%}, ecart median {ecart_med}")
+        SOURCES["nasdaq_ecarte"] = True
+        print(f"  Nasdaq ECARTE (couverture {couv_nq:.0%}, ecart median {ecart_med}) : "
+              f"StockAnalysis seul aux Etats-Unis")
     print(f"  {len(table)} cours disponibles")
     intl = sum(1 for k in table if "." in k)
     print(f"    dont {intl} hors des Etats-Unis")
@@ -564,21 +638,22 @@ def main():
     # ---- cours perimes -------------------------------------------------------
     # Une societe radiee gardait son dernier cours, et avec lui une decote qui
     # n'existe plus. Garde : seulement si la liste de SA place a ete lue.
-    places_ok = places_purgeables(table, cibles, LISTES_KO)
-    purges = [t for t in perimes
-              if (("." + t.rsplit(".", 1)[1]) if "." in t else "") in places_ok]
+    # 27/10/2026 — UN COURS N'EST EFFACE QU'APRES 10 JOURS SANS AUCUNE SOURCE.
+    # Un passage partiel (liste refusee, source tronquee) ne detruit plus rien :
+    # le dernier cours connu reste, date par `maj_cours`, et la sante du
+    # screener signale la couverture. Une societe radiee disparait de toutes
+    # les sources ; au dixieme jour sans cours, elle perd le sien.
+    limite = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - PURGE_JOURS * 86400))
+    purges = []
+    for i in range(0, len(perimes), 90):
+        lot = perimes[i:i + 90]
+        r = d1("SELECT ticker FROM metriques WHERE cours IS NOT NULL AND ticker IN ("
+               + ", ".join("?" * len(lot)) + ") AND (maj_cours IS NULL OR maj_cours < ?)", lot + [limite])
+        purges += [l["ticker"] for l in r[0]["results"]]
     epargnes = len(perimes) - len(purges)
     if epargnes:
-        print(f"  {epargnes} cours conserves : place incomplete ce passage "
-              f"({', '.join(c for c, _ in LISTES_KO) or 'couverture < 80 %'})")
+        print(f"  {epargnes} cours conserves (absents de ce passage depuis moins de {PURGE_JOURS} jours)")
         s.compte("cours_epargnes", epargnes)
-    for i in range(0, len(purges), 40):
-        lot = purges[i:i + 40]
-        d1("UPDATE metriques SET cours = NULL, epv_sur_cours = NULL, "
-           "eva_sur_cours = NULL, concordance = NULL, fcf_yield = NULL, "
-           "per_courant = NULL, part_tresorerie = NULL, croissance_implicite = NULL, "
-           "maj_cours = ? WHERE ticker IN (" + ", ".join("?" * len(lot)) + ")",
-           [RUN_TS] + lot)
     if purges:
         print(f"  {len(purges)} cours perime(s) efface(s) : {' '.join(purges[:8])}")
         s.compte("cours_perimes", len(purges))
@@ -589,7 +664,7 @@ def main():
             f"{ecrites} cotations, {echecs} sans cours{ko_txt}",
             {"cibles": len(cibles), "ecrites": ecrites, "echecs": echecs,
              "listes_ko": [c for c, _ in LISTES_KO], "epargnes": epargnes,
-             "listes_us": {c: LISTES_N.get(c) for c in LISTES_US},
+             "listes_us": {c: LISTES_N.get(c) for c in LISTES_US}, "sources": SOURCES,
              "erreurs": s.resume().get("erreurs", {})})
     print("OK")
 
