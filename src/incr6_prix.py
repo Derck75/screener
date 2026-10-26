@@ -367,6 +367,17 @@ LISTES_KO = []
 LISTES_N = {}
 
 
+def places_faibles(cibles, cotees, mini=20, seuil=0.7):
+    """[(suffixe, couverture)] des places d'au moins `mini` cibles cotees sous `seuil`."""
+    suff = lambda t: ("." + t.rsplit(".", 1)[1]) if "." in t else ""
+    par = {}
+    for t in cibles:
+        n = par.setdefault(suff(t), [0, 0])
+        n[0] += 1
+        n[1] += t in cotees
+    return sorted((p, ok / n) for p, (n, ok) in par.items() if n >= mini and ok / n < seuil)
+
+
 def cours_depuis_listes(s):
     """Rend {ticker: (cours, capitalisation)} pour tout le panel americain.
 
@@ -663,6 +674,13 @@ def main():
 
     s.afficher()
     ko_txt = f" · listes illisibles : {', '.join(c for c, _ in LISTES_KO)}" if LISTES_KO else ""
+    # 27/10/2026 — COUVERTURE PAR PLACE. Le total cache une place qui tombe :
+    # Paris entier sans cours ne retire que 2,6 % du panel. Toute place d'au
+    # moins 20 cibles cotee a moins de 70 % ce passage est nommee dans le
+    # message, que la sante du serveur lit.
+    faibles = places_faibles(cibles, {t for t, _, _ in maj})
+    if faibles:
+        ko_txt += " · places sous 70 % : " + ", ".join(f"{p or 'US'} {c:.0%}" for p, c in faibles)
     journal("OK", f"incr6_prix_t{a.tranche}", ecrites, "VERT",
             f"{ecrites} cotations, {echecs} sans cours{ko_txt}",
             {"cibles": len(cibles), "ecrites": ecrites, "echecs": echecs,
