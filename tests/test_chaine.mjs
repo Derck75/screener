@@ -102,6 +102,19 @@ verifier(M('SPAC').croissance_implicite === null, 'exclue : pas valorisée');
 db.prepare("UPDATE metriques SET cours = NULL WHERE ticker = 'CROI'").run();
 await V.main();
 verifier(M('CROI').bande_n === null && M('CROI').croissance_implicite === null, 'sans cours : ratios effacés');
+// 27/10/2026 — l'étage métriques réécrit une ligne : son cours et sa
+// valorisation ne doivent PAS repartir à NULL (INSERT OR REPLACE le faisait).
+db.prepare("UPDATE comptes2 SET revenue = revenue * 1.02, ebit = ebit * 1.02, netIncome = netIncome * 1.02 WHERE ticker = 'MSFT'").run();
+// Témoin de réécriture : le résultat net du dernier exercice (`maj` est à la
+// seconde et peut ne pas bouger si les deux passages tombent dans la même).
+const avantCours = M('MSFT').cours, avantBande = M('MSFT').bande_n, avantRN = M('MSFT').rn_dernier;
+await import(new URL('../src/incr5_metriques.mjs?relance', import.meta.url).href);
+// Le module s'exécute à l'import, sans promesse exposée : attente active de la
+// réécriture (jusqu'à 10 s), jamais un délai fixe — un exécuteur lent l'a fait échouer.
+for (let i = 0; i < 100 && M('MSFT').rn_dernier === avantRN; i++) await new Promise(r => setTimeout(r, 100));
+await new Promise(r => setTimeout(r, 300));
+verifier(Number.isFinite(avantRN) && M('MSFT').rn_dernier !== avantRN, 'relance des métriques : la ligne MSFT a bien été réécrite');
+verifier(avantCours === 470 && M('MSFT').cours === 470 && M('MSFT').bande_n === avantBande, 'ligne réécrite : cours et bande conservés (upsert, plus de REPLACE)');
 console.log(`\n${ok} réussis, ${ko} échoués`);
 F.restaurer();
 if (ko) process.exitCode = 1;
