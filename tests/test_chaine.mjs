@@ -102,6 +102,14 @@ verifier(M('SPAC').croissance_implicite === null, 'exclue : pas valorisée');
 db.prepare("UPDATE metriques SET cours = NULL WHERE ticker = 'CROI'").run();
 await V.main();
 verifier(M('CROI').bande_n === null && M('CROI').croissance_implicite === null, 'sans cours : ratios effacés');
+// 27/10/2026 — l'étage métriques réécrit une ligne : son cours et sa
+// valorisation ne doivent PAS repartir à NULL (INSERT OR REPLACE le faisait).
+db.prepare("UPDATE comptes2 SET revenue = revenue * 1.02, ebit = ebit * 1.02 WHERE ticker = 'MSFT'").run();
+const avantCours = M('MSFT').cours, avantBande = M('MSFT').bande_n, avantMaj = M('MSFT').maj;
+await import(new URL('../src/incr5_metriques.mjs?relance', import.meta.url).href);
+await new Promise(r => setTimeout(r, 300));
+verifier(M('MSFT').maj !== avantMaj, 'relance des métriques : la ligne MSFT a bien été réécrite');
+verifier(avantCours === 470 && M('MSFT').cours === 470 && M('MSFT').bande_n === avantBande, 'ligne réécrite : cours et bande conservés (upsert, plus de REPLACE)');
 console.log(`\n${ok} réussis, ${ko} échoués`);
 F.restaurer();
 if (ko) process.exitCode = 1;

@@ -664,6 +664,13 @@ async function main() {
     await journal("EN COURS", cout, "—", `intention de ${cout} ecritures`);
 
     const liste = "ticker, " + COLONNES.join(", ");
+    /* 27/10/2026 — UPSERT, PLUS « INSERT OR REPLACE ». REPLACE supprime la
+       ligne puis la recree : toutes les colonnes que cet etage n'ecrit pas —
+       le COURS, sa date, et toute la valorisation — repartaient a NULL sur
+       les ~1 800 societes reecrites chaque jour, jusqu'au passage de l'etage
+       prix. Le 26/10, ce passage a echoue : ces societes sont restees sans
+       cours. Desormais seules les colonnes de cet etage sont mises a jour. */
+    const MAJ_SEULES = " ON CONFLICT(ticker) DO UPDATE SET " + COLONNES.map(c => `${c} = excluded.${c}`).join(", ");
     // Lots de 50 : une ligne porte desormais pres de cinquante colonnes, dont
     // plusieurs libelles de 200 caracteres, et D1 refuse une requete au-dela
     // de 100 Ko. A 100 lignes, le lot frolait la limite.
@@ -671,7 +678,7 @@ async function main() {
       const lot = aEcrire.slice(i, i + 50).map(([t, v]) =>
         "(" + tx(t) + ", " + COLONNES.map(c =>
           COLONNES_TEXTE.includes(c) ? tx(v[c]) : nb(v[c])).join(", ") + ")");
-      await d1(`INSERT OR REPLACE INTO metriques (${liste}) VALUES ` + lot.join(", "));
+      await d1(`INSERT INTO metriques (${liste}) VALUES ` + lot.join(", ") + MAJ_SEULES);
       if ((i + 50) % 1000 === 0) console.log(`  ecrit ${Math.min(i + 50, aEcrire.length)}/${aEcrire.length}`);
     }
   }
