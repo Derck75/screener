@@ -287,6 +287,9 @@ def pages_liste(chemin, s):
 # Listes non lues au dernier passage : (chemin, suffixe). Une place dont UNE
 # liste manque n'est pas « lue » — voir la purge des cours perimes.
 LISTES_KO = []
+# Pages et cours lus par liste au dernier passage : ecrits dans la base, pour
+# qu'une couverture qui s'effondre se lise sans le journal GitHub.
+LISTES_N = {}
 
 
 def places_purgeables(table, cibles, listes_ko, seuil=0.8):
@@ -363,6 +366,7 @@ def cours_depuis_listes(s):
             # Point final retire (Londres : « BA. ») — voir univers_intl.
             out[c[i_sym].upper().rstrip(".").replace(".", "-") + suffixe] = (px, cap)
             n += 1
+        LISTES_N[chemin] = {"pages": len(pages), "cours": n}
         print(f"  {chemin}{' ' + suffixe if suffixe else ''} : {n} cours")
         s.compte("cours_lus", n)
         time.sleep(0.8)
@@ -584,7 +588,9 @@ def main():
     journal("OK", f"incr6_prix_t{a.tranche}", ecrites, "VERT",
             f"{ecrites} cotations, {echecs} sans cours{ko_txt}",
             {"cibles": len(cibles), "ecrites": ecrites, "echecs": echecs,
-             "listes_ko": [c for c, _ in LISTES_KO], "epargnes": epargnes})
+             "listes_ko": [c for c, _ in LISTES_KO], "epargnes": epargnes,
+             "listes_us": {c: LISTES_N.get(c) for c in LISTES_US},
+             "erreurs": s.resume().get("erreurs", {})})
     print("OK")
 
 
