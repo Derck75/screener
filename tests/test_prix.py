@@ -1,4 +1,4 @@
-"""Prix : purge des cours perimes gardee par la completude de la place (26/10/2026)."""
+"""Prix : Nasdaq primaire aux Etats-Unis, recoupement, purge par anciennete (27/10/2026)."""
 import os, sys
 os.environ.update(CF_ACCOUNT="a", CF_DB="b", CF_TOKEN="c")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
@@ -11,32 +11,45 @@ def verifier(c, m):
     if not c: sys.exit(1)
     ok += 1
 
-cibles = [f"US{i}" for i in range(100)] + [f"F{i}.PA" for i in range(20)]
-# NYSE refusee : 40 % des americains seulement
-table = {f"US{i}": (1.0, None) for i in range(40)}
-table.update({f"F{i}.PA": (1.0, None) for i in range(19)})
-places = P.places_purgeables(table, cibles, [("nyse-stocks", "")])
-verifier("" not in places, "une liste americaine illisible : aucun cours americain efface")
-verifier(".PA" in places, "Paris complete (19/20) : la radiee peut etre effacee")
-places = P.places_purgeables(table, cibles, [])
-verifier("" not in places, "listes lues mais 40 % de couverture : aucune purge")
-table.update({f"US{i}": (1.0, None) for i in range(40, 97)})
-verifier("" in P.places_purgeables(table, cibles, []), "97 % de couverture, toutes listes lues : purge permise")
+rows = [{"symbol": "AAPL", "lastsale": "$347.725", "marketCap": "5074761240500.00"},
+        {"symbol": "BRK/B", "lastsale": "$542.19", "marketCap": "1196239962242.00"},
+        {"symbol": "JPM^D", "lastsale": "$25.10", "marketCap": ""},
+        {"symbol": "XYZ", "lastsale": "NA", "marketCap": ""},
+        {"symbol": "KO ", "lastsale": "$92.71", "marketCap": "NA"}]
+nq = P.lire_nasdaq(rows)
+verifier(nq["AAPL"] == (347.725, 5074761240500.0), "cours et capitalisation lus, symbole et dollar nettoyes")
+verifier("BRK-B" in nq and "JPM^D" not in nq and "JPM-D" not in nq, "classe d'actions en tiret, preferentielles ignorees")
+verifier("XYZ" not in nq and nq["KO"] == (92.71, None), "cours absent ignore ; capitalisation NA = None")
 
-# lire_liste : trois essais avant d'abandonner
-appels = []
+sa = {"AAPL": (347.0, None), "BRK-B": (540.0, None), "KO": (92.7, None)}
+n, med, part = P.recouper(nq, sa)
+verifier(n == 3 and med < 0.01 and part == 0, f"recoupement : 3 communs, ecart median {med:.3%}")
+n, med, part = P.recouper({k: (v[0] * 100, v[1]) for k, v in nq.items()}, sa)
+verifier(med > 50, "erreur d'unite (cents) : ecart median enorme, Nasdaq serait ecarte")
+
+# purge : seuls les cours absents de TOUTES les sources depuis 10 jours sont effaces
+verifier(P.PURGE_JOURS == 10, "purge apres 10 jours sans aucune source")
+
+# lire_liste : 404 = fin de pagination, pas de nouvel essai
+import urllib.error
+essais = []
 class S:
-    def erreur(self, *a): appels.append(("erreur",) + a)
+    def erreur(self, *a): pass
 def faux_urlopen(req, timeout=None):
-    appels.append("essai")
-    if len([a for a in appels if a == "essai"]) < 3:
-        raise TimeoutError("lent")
+    essais.append(1)
+    raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+P.urllib.request.urlopen = faux_urlopen
+P.time.sleep = lambda s: None
+verifier(P.lire_liste("https://x/list/nyse-stocks/?page=5", S()) is None and len(essais) == 1, "404 : un seul essai")
+essais.clear()
+def faux2(req, timeout=None):
+    essais.append(1)
+    if len(essais) < 3: raise TimeoutError("lent")
     class R:
         def __enter__(s): return s
         def __exit__(s, *a): return False
         def read(s): return b"<html>ok</html>"
     return R()
-P.urllib.request.urlopen = faux_urlopen
-P.time.sleep = lambda s: None
-verifier(P.lire_liste("https://x/list/nyse-stocks/", S()) == "<html>ok</html>" and appels.count("essai") == 3, "deux refus passagers puis succes : liste lue")
+P.urllib.request.urlopen = faux2
+verifier(P.lire_liste("https://x/list/nyse-stocks/", S()) == "<html>ok</html>" and len(essais) == 3, "deux refus passagers puis succes : liste lue")
 print(f"\n{ok} reussis")

@@ -1,6 +1,11 @@
 name: diag
 on:
   workflow_dispatch:
+    inputs:
+      sources:
+        description: "Diagnostic des sources de cours seulement (lecture seule)"
+        type: boolean
+        default: false
 
 jobs:
   diagnostic:
@@ -12,7 +17,11 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install requests
+      - name: Sources de cours (lecture seule, aucune ecriture)
+        if: ${{ inputs.sources == true }}
+        run: python src/diag_sources.py
       - name: Diagnostic lecture seule
+        if: ${{ inputs.sources != true }}
         env:
           PYTHONUNBUFFERED: "1"
           CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
