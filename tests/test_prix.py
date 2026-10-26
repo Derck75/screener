@@ -52,4 +52,7 @@ def faux2(req, timeout=None):
     return R()
 P.urllib.request.urlopen = faux2
 verifier(P.lire_liste("https://x/list/nyse-stocks/", S()) == "<html>ok</html>" and len(essais) == 3, "deux refus passagers puis succes : liste lue")
+cib = [f"F{i}.PA" for i in range(30)] + [f"U{i}" for i in range(100)] + ["X.AX"]
+fa = P.places_faibles(cib, {f"U{i}" for i in range(95)} | {f"F{i}.PA" for i in range(10)})
+verifier(fa == [(".PA", 10 / 30)], f"Paris cotee a 33 % : nommee, US 95 % et petite place ignorees ({fa})")
 print(f"\n{ok} reussis")
