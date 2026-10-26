@@ -64,4 +64,5 @@ jobs:
           python tests/test_incr8_libelles.py
           python tests/test_discord.py
           python tests/test_differentiel.py
+          python tests/test_prix.py
           node --no-warnings tests/test_lourd_coeur.mjs
