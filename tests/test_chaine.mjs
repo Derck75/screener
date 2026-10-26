@@ -107,6 +107,9 @@ verifier(M('CROI').bande_n === null && M('CROI').croissance_implicite === null, 
 db.prepare("UPDATE comptes2 SET revenue = revenue * 1.02, ebit = ebit * 1.02 WHERE ticker = 'MSFT'").run();
 const avantCours = M('MSFT').cours, avantBande = M('MSFT').bande_n, avantMaj = M('MSFT').maj;
 await import(new URL('../src/incr5_metriques.mjs?relance', import.meta.url).href);
+// Le module s'exécute à l'import, sans promesse exposée : attente active de la
+// réécriture (jusqu'à 10 s), jamais un délai fixe — un exécuteur lent l'a fait échouer.
+for (let i = 0; i < 100 && M('MSFT').maj === avantMaj; i++) await new Promise(r => setTimeout(r, 100));
 await new Promise(r => setTimeout(r, 300));
 verifier(M('MSFT').maj !== avantMaj, 'relance des métriques : la ligne MSFT a bien été réécrite');
 verifier(avantCours === 470 && M('MSFT').cours === 470 && M('MSFT').bande_n === avantBande, 'ligne réécrite : cours et bande conservés (upsert, plus de REPLACE)');
