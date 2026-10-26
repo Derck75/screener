@@ -33,9 +33,11 @@ jobs:
           CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
           CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
           FORCER: ${{ inputs.forcer == true }}
+        # 27/10/2026 — budget D1 controle a CHAQUE declenchement, force compris :
+        # une chaine coute ~30 000 lignes reelles sur 100 000 par jour.
         run: |
-          if [ "$FORCER" = "true" ]; then echo "faire=true" >> "$GITHUB_OUTPUT"
-          else python3 src/garde.py --etape incr7_valorisation --heures 12; fi
+          if [ "$FORCER" = "true" ]; then python3 src/garde.py --etape incr7_valorisation --heures 12 --forcer --budget-chaine 30000
+          else python3 src/garde.py --etape incr7_valorisation --heures 12 --budget-chaine 30000; fi
 
   metriques:
     runs-on: ubuntu-24.04
