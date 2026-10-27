@@ -538,6 +538,21 @@ def main():
     cibles_us = [t for t in cibles if "." not in t]
     couv_nq = sum(1 for t in cibles_us if t.upper() in nq) / max(1, len(cibles_us))
     n_com, ecart_med, part_ecart = recouper(nq, sa_us)
+    # 27/10/2026 — LA REFERENCE EST LA VEILLE, PAS STOCKANALYSIS. StockAnalysis
+    # se degrade (NYSE : 0 cours le 27/10) ; s'il servait des prix faux, il
+    # ferait ecarter la bonne source. Les cours deja en base (passage
+    # precedent) sont la reference de bon sens : une erreur d'unite ou de
+    # symbole s'y voit en dizaines de %, un jour de marche en quelques %.
+    veille = {}
+    for i in range(0, len(cibles_us), 90):
+        lot = cibles_us[i:i + 90]
+        for l in d1("SELECT ticker, cours FROM metriques WHERE cours IS NOT NULL AND ticker IN ("
+                    + ", ".join("?" * len(lot)) + ")", lot)[0]["results"]:
+            veille[l["ticker"]] = (l["cours"], None)
+    n_v, ecart_v, part_v = recouper(nq, veille)
+    SOURCES.update({"communs_veille": n_v, "ecart_median_veille": None if ecart_v is None else round(ecart_v, 4),
+                    "part_ecart_veille_10pc": None if part_v is None else round(part_v, 3)})
+    ref = ecart_v if n_v >= 100 else ecart_med
     SOURCES.update({"nasdaq": len(nq), "stockanalysis_us": len(sa_us),
                     "couverture_us_nasdaq": round(couv_nq, 3), "communs": n_com,
                     "ecart_median": None if ecart_med is None else round(ecart_med, 4),
@@ -545,16 +560,17 @@ def main():
     # Seuil a 5 % (27/10/2026) : les deux sources ne relevent pas leurs cours
     # a la meme heure (1 % d'ecart median le 26/10, davantage un jour agite) ;
     # une erreur d'unite ou de symbole, elle, se compte en dizaines de %.
-    if couv_nq >= 0.5 and (ecart_med is None or ecart_med <= 0.05):
+    if couv_nq >= 0.5 and (ref is None or ref <= 0.05):
         # Nasdaq primaire aux Etats-Unis ; la capitalisation de StockAnalysis
         # ne comble que l'absence de celle de Nasdaq.
         for k, (px, cap) in nq.items():
             cap_sa = table.get(k, (None, None))[1]
             table[k] = (px, cap or cap_sa)
-        print(f"  Nasdaq primaire : couverture americaine {couv_nq:.0%}, "
-              f"ecart median {0 if ecart_med is None else ecart_med:.2%} sur {n_com} communs")
+        print(f"  Nasdaq primaire : couverture americaine {couv_nq:.0%}, ecart median "
+              f"{0 if ecart_v is None else ecart_v:.2%} avec la veille ({n_v}), "
+              f"{0 if ecart_med is None else ecart_med:.2%} avec StockAnalysis ({n_com})")
     else:
-        s.erreur("nasdaq_ecarte", f"couverture {couv_nq:.0%}, ecart median {ecart_med}")
+        s.erreur("nasdaq_ecarte", f"couverture {couv_nq:.0%}, ecart median {ref} (veille {ecart_v}, StockAnalysis {ecart_med})")
         SOURCES["nasdaq_ecarte"] = True
         print(f"  Nasdaq ECARTE (couverture {couv_nq:.0%}, ecart median {ecart_med}) : "
               f"StockAnalysis seul aux Etats-Unis")
