@@ -49,6 +49,17 @@ PLACE = SA_CODE
 # l'essai des trois chemins a montre 8 postes contre 4. Les quatre de plus
 # — tax, pretax, ebitda, shares — portent le taux d'impot de l'EPV et le
 # controle d'unite du nombre d'actions.
+# CANARI (28/10/2026). Sans lui, une refonte du site de StockAnalysis passait
+# pour « sans_revenue » sur chaque societe : passage OK, zero ligne, et toutes
+# les cibles ecartees trente jours — les comptes restaient en base, mais plus
+# aucun nouvel exercice n'entrait, sans un mot. LVMH publie son CA depuis
+# toujours : s'il ne se lit plus, c'est l'extraction ou la source, jamais LVMH.
+CANARI = "MC.PA"
+CANARI_EXERCICES_MIN = 3
+# Garde de masse : au moins 20 cibles, aucune lue, 80 % « servies sans CA »
+# — meme diagnostic que le canari, sur l'echantillon du passage.
+MASSE_MIN, MASSE_PART = 20, 0.8
+
 PAGES = {"income-statement/": "resultat", "balance-sheet/": "bilan",
          "cash-flow-statement/": "flux"}
 
@@ -440,6 +451,23 @@ def main():
         journal("OK", s.etape, 0, "VERT", "aucune cible", s.resume())
         return
 
+    # ---- canari : l'extraction fonctionne-t-elle encore ? ---------------------
+    # PANNE journalisee (la sante du serveur la lit et previent), sortie 0 :
+    # un echec de job toutes les deux heures, c'est douze e-mails de GitHub
+    # par jour pour une seule cause deja signalee.
+    s.phase("canari")
+    code_c, sym_c = PLACE.get(suffixe(CANARI)), symbole_sa(CANARI)
+    html_c, st_c = lire_code(f"https://stockanalysis.com/quote/{code_c}/{sym_c}/financials/income-statement/", s)
+    n_c = len((extraire(html_c, "resultat") if html_c else {}).get("revenue", {}))
+    if n_c < CANARI_EXERCICES_MIN:
+        msg = (f"canari rouge : {CANARI} statut {st_c}, {n_c} exercice(s) de CA lu(s) — "
+               f"structure de StockAnalysis changee ou source refusee ; aucune societe marquee")
+        print("PANNE : " + msg)
+        journal("PANNE", s.etape, 0, "ROUGE", msg, s.resume())
+        s.afficher()
+        return
+    time.sleep(PAUSE)
+
     s.phase("collecte")
     rangs, sans_page, lues, devises = {}, [], [], {}
     for i, t in enumerate(cibles, 1):
@@ -476,6 +504,14 @@ def main():
             print(f"  {i}/{len(cibles)} — {len(rangs)} lignes")
 
     print(f"  {len(rangs)} lignes composees")
+    n_sr = sum(1 for _, m in sans_page if m == "sans_revenue")
+    if len(cibles) >= MASSE_MIN and not lues and n_sr >= MASSE_PART * len(cibles):
+        msg = (f"{n_sr}/{len(cibles)} pages servies sans aucun CA reconnu — extraction a revoir "
+               f"(canari {CANARI} pourtant lu) ; aucune societe marquee")
+        print("PANNE : " + msg)
+        journal("PANNE", s.etape, 0, "ROUGE", msg, s.resume())
+        s.afficher()
+        return
     # PANNE seulement si RIEN n'a ete appris. Un passage tombe entierement sur
     # des cotations secondaires sans page n'est pas une panne : s'arreter ici
     # empechait de les marquer, et le passage suivant retombait sur les memes,
