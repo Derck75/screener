@@ -29,8 +29,11 @@ PAGE = ('<table><tr><th>Fiscal Year</th><th>FY 2024</th><th>FY 2023</th></tr>'
         '<tr><td>Revenue</td><td>6,677</td><td>5,970</td></tr>'
         '<tr><td>Operating Income</td><td>1,888</td><td>1,617</td></tr></table>')
 urls = []
+PAGE_MC = ('<table><tr><th>Fiscal Year</th><th>FY 2024</th><th>FY 2023</th><th>FY 2022</th></tr>'
+           '<tr><td>Revenue</td><td>84,683</td><td>86,153</td><td>79,184</td></tr></table>')
 def faux_lire(url, s=None):
     urls.append(url)
+    if "/epa/MC/" in url: return (PAGE_MC, 200)
     if "/bit/RACE/" in url: return (PAGE, 200)
     if "/lon/BA/" in url: return (None, 404)
     if "/osl/EQNR/" in url: return (None, 503)
@@ -55,4 +58,31 @@ ok(any(q.startswith("UPDATE societe SET comptes_maj = ?, sans_sa_le = NULL") and
 ok(any(q.startswith("UPDATE societe SET origine = REPLACE") for q, p in appels), "anciennes marques sans_sa effacées à la migration")
 sel = next(q for q, p in appels if q.startswith("SELECT s.ticker"))
 ok("vaneck" in sel and "secondaire" in sel and "sans_sa_motif" in sel, "file : lignes VanEck incluses, secondaires exclues, retente datée")
+ok(urls[0].endswith("/epa/MC/financials/income-statement/"), "canari LVMH lu avant les cibles")
+
+# 28/10/2026 — StockAnalysis change de structure : le canari ne lit plus rien
+journaux = []
+I8.journal = lambda *a, **k: journaux.append(a)
+appels.clear(); urls.clear()
+I8.lire_code = lambda url, s=None: (urls.append(url), ("<html><div>nouvelle maquette</div></html>", 200))[1]
+I8.main()
+ok(len(urls) == 1 and journaux and journaux[-1][0] == "PANNE" and "canari rouge : MC.PA statut 200, 0 exercice" in journaux[-1][4],
+   "site refondu : PANNE journalisée sur le canari, aucune cible lue")
+ok(not any(q.startswith("UPDATE societe SET sans_sa_le") for q, p in appels), "… et aucune société écartée 30 jours")
+
+# garde de masse : canari lu, mais 25 cibles servies sans CA
+journaux.clear(); appels.clear()
+_d1 = faux_d1
+def faux_d1_25(sql, params=None, lignes=0, table=None):
+    if sql.startswith("SELECT s.ticker"):
+        appels.append((sql, params))
+        return [{"results": [{"ticker": f"X{i}.PA", "n": 0} for i in range(25)]}]
+    return _d1(sql, params, lignes, table)
+for m in (commun, I8):
+    m.d1 = faux_d1_25
+I8.lire_code = lambda url, s=None: ((PAGE_MC, 200) if "/epa/MC/" in url else ("<table><tr><td>Autre</td><td>1</td></tr></table>", 200))
+sys.argv = ["incr8", "--taille", "30"]
+I8.main()
+ok(journaux and journaux[-1][0] == "PANNE" and "25/25 pages servies sans aucun CA" in journaux[-1][4], "25 cibles servies sans CA : PANNE (extraction à revoir)")
+ok(not any(q.startswith("UPDATE societe SET sans_sa_le") for q, p in appels), "… et aucune société écartée 30 jours")
 sys.exit(1 if ECHECS else 0)
