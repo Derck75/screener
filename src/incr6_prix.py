@@ -688,13 +688,29 @@ def main():
         print(f"  {len(purges)} cours perime(s) efface(s) : {' '.join(purges[:8])}")
         s.compte("cours_perimes", len(purges))
 
+    # 17/11/2026 — PRE-COTATION DU SERVEUR. Depuis le 11/11 l'API Nasdaq refuse
+    # les machines de GitHub ; le serveur (Cloudflare) cote les americaines a
+    # 15 h 27 UTC, avant cette chaine. Un cours ecrit aujourd'hui par lui est
+    # un cours du jour : il compte dans la couverture, il n'est pas une panne.
+    jour0 = time.strftime("%Y-%m-%dT00:00:00Z", time.gmtime())
+    frais = []
+    for i in range(0, len(perimes), 90):
+        lot = perimes[i:i + 90]
+        r = d1("SELECT ticker FROM metriques WHERE ticker IN (" + ", ".join("?" * len(lot)) + ") AND maj_cours >= ?", lot + [jour0])
+        frais += [l["ticker"] for l in r[0]["results"]]
+    if frais:
+        print(f"  {len(frais)} cours du jour deja servis par le serveur (pre-cotation)")
+        s.compte("cours_serveur_du_jour", len(frais))
+
     s.afficher()
     ko_txt = f" · listes illisibles : {', '.join(c for c, _ in LISTES_KO)}" if LISTES_KO else ""
+    if frais:
+        ko_txt += f" · {len(frais)} cours du jour servis par le serveur"
     # 27/10/2026 — COUVERTURE PAR PLACE. Le total cache une place qui tombe :
     # Paris entier sans cours ne retire que 2,6 % du panel. Toute place d'au
     # moins 20 cibles cotee a moins de 70 % ce passage est nommee dans le
     # message, que la sante du serveur lit.
-    faibles = places_faibles(cibles, {t for t, _, _ in maj})
+    faibles = places_faibles(cibles, {t for t, _, _ in maj} | set(frais))
     if faibles:
         ko_txt += " · places sous 70 % : " + ", ".join(f"{p or 'US'} {c:.0%}" for p, c in faibles)
     journal("OK", f"incr6_prix_t{a.tranche}", ecrites, "VERT",
