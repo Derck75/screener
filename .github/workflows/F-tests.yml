@@ -67,3 +67,5 @@ jobs:
           python tests/test_prix.py
           python tests/test_garde.py
           node --no-warnings tests/test_lourd_coeur.mjs
+          node --no-warnings tests/test_esef_repli.mjs
+          python tests/test_lei.py
