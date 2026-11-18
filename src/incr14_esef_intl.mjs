@@ -111,11 +111,21 @@ export async function main(dep = {}) {
       const kv = new KVMemoire({ ['sa:' + c.ticker]: { statut: 'OK', series: ref } });
       const e = { yahoo: c.ticker, nom: c.nom, lei: c.lei };
       let r = null;
-      for (let i = 0; i < 12; i++) {
+      /* Un passage lit au plus 4 tranches de 4 Mo : une archive ESEF de 30 Mo
+         en demande plusieurs. La validation se rejoue à CHAQUE passage, donc un
+         « mapping » KO avant la fin du premier dépôt veut seulement dire « rien
+         lu encore » : on ne s'arrête que sur fin de lecture, refus de découverte,
+         absence de progrès, ou calibration acquise sur les deux dépôts récents
+         (les exercices neufs sont là ; les anciens sont déjà en base). */
+      let avant = '';
+      for (let i = 0; i < 40; i++) {
         W.reinitialiserCompteur();
-        r = await W.construireEsef(e, kv, { lots: 8 });
+        r = await W.construireEsef(e, kv, { lots: 4, tranche: 4096 });
         await kv.put('esef:' + c.ticker, JSON.stringify(r));
-        if (r.complet || r.statut === 'KO' && r.cause) break;
+        const pos = `${r.curseur || 0}:${r.octet || 0}`;
+        if (r.complet || (r.statut === 'KO' && r.cause && r.cause !== 'mapping') || pos === avant) break;
+        if (r.statut === 'OK' && (r.curseur || 0) >= 2) break;
+        avant = pos;
       }
       if (!r || r.statut !== 'OK' || !r.series) { r && r.cause === 'absent_index' ? B.absentes++ : B.refusees++; if (ESSAI) console.log(`  ${c.ticker} : ${r ? (r.cause || r.statut) + ' — ' + String(r.erreur || '').slice(0, 90) + ` · ${Object.keys(r.brut || {}).length} postes lus (CA : ${Object.keys((r.brut || {}).revenue || {}).join(',') || '—'}), ${(r.depots || []).length} dépôts, curseur ${r.curseur || 0}, ${Object.values(r.depotsLus || {}).map(d => d.statut + '/' + (d.ecrits || 0)).join(' ')}` : 'rien'}`); continue; }
       if (c.devise_comptes && r.devise && c.devise_comptes !== r.devise) { B.devise++; continue; }
