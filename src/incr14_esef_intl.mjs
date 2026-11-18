@@ -76,7 +76,7 @@ export async function main(dep = {}) {
   const ev = FORCER ? { actif: true, motif: 'forcé' } : await eveil(q);
   if (!ev.actif) { console.log(`En sommeil — ${ev.motif}.`); return { sommeil: true }; }
   console.log(`Éveillé — ${ev.motif}${ESSAI ? ' · ESSAI, rien n\'est écrit' : ''}`);
-  const cibles = await q(`SELECT s.ticker, s.nom, s.lei, s.devise_comptes FROM societe s WHERE s.lei IS NOT NULL AND (${EUROPE.map(p => `s.ticker LIKE '%${p}'`).join(' OR ')}) ORDER BY s.comptes_maj ASC, s.capitalisation DESC LIMIT ?`, [LOT]);
+  const cibles = await q(`SELECT s.ticker, s.nom, s.lei, s.devise_comptes FROM societe s WHERE s.lei IS NOT NULL AND (${EUROPE.map(p => `s.ticker LIKE '%${p}'`).join(' OR ')}) ORDER BY ${ARGS.has('--grandes') ? 's.capitalisation DESC' : 's.comptes_maj ASC, s.capitalisation DESC'} LIMIT ?`, [LOT]);
   const W = dep.W || (await chargerModule(await telechargerWorker())).W;
   const B = { societes: 0, validees: 0, refusees: 0, absentes: 0, devise: 0, lignes: 0, erreurs: 0 };
   for (const c of cibles) {
@@ -94,7 +94,7 @@ export async function main(dep = {}) {
         await kv.put('esef:' + c.ticker, JSON.stringify(r));
         if (r.complet || r.statut === 'KO' && r.cause) break;
       }
-      if (!r || r.statut !== 'OK' || !r.series) { r && r.cause === 'absent_index' ? B.absentes++ : B.refusees++; continue; }
+      if (!r || r.statut !== 'OK' || !r.series) { r && r.cause === 'absent_index' ? B.absentes++ : B.refusees++; if (ESSAI) console.log(`  ${c.ticker} : ${r ? (r.cause || r.statut) + ' — ' + String(r.erreur || '').slice(0, 90) : 'rien'}`); continue; }
       if (c.devise_comptes && r.devise && c.devise_comptes !== r.devise) { B.devise++; continue; }
       B.validees++;
       const neuves = lignesNeuves(r.series, new Set(rows.map(x => Number(x.exercice))));
