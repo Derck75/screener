@@ -1,0 +1,33 @@
+/* incr14 — repli ESEF en sommeil : éveil, calibration réutilisée, exercices
+   absents seulement, devise divergente écartée. */
+import { DatabaseSync } from 'node:sqlite';
+import { eveil, lignesNeuves, main } from '../src/incr14_esef_intl.mjs';
+let echecs = 0;
+const ok = (c, m) => { console.log((c ? '✅ ' : '❌ ') + m); if (!c) echecs++; };
+const db = new DatabaseSync(':memory:');
+db.exec(`CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, debut TEXT, fin TEXT, etape TEXT, statut TEXT, lignes_ecrites INTEGER, canari TEXT, message TEXT, detail TEXT);
+CREATE TABLE societe (ticker TEXT PRIMARY KEY, nom TEXT, lei TEXT, devise_comptes TEXT, comptes_maj TEXT, capitalisation REAL);
+CREATE TABLE comptes2 (ticker TEXT, exercice INTEGER, revenue REAL, netIncome REAL, ebit REAL, grossProfit REAL, cfo REAL, capex REAL, da REAL, ebitda REAL, sbc REAL, tax REAL, pretax REAL, amortAcq REAL, assets REAL, ppe REAL, intangTot REAL, intangExGW REAL, goodwill REAL, receivables REAL, inventory REAL, payables REAL, currentLiab REAL, debt REAL, cash REAL, equity REAL, shares REAL, deferredRev REAL, deferredRevNC REAL, flottant REAL, source TEXT, PRIMARY KEY (ticker, exercice));`);
+const q = async (sql, p = []) => { const st = db.prepare(sql); return /^\s*(SELECT|PRAGMA)/i.test(sql) ? st.all(...p).map(o => ({ ...o })) : (st.run(...p), []); };
+const J = d => Date.parse(d + 'T08:00:00Z');
+db.prepare("INSERT INTO runs (debut, etape, statut, lignes_ecrites, message) VALUES ('2026-11-01T08:00:00Z', 'incr8_comptes_intl_t0', 'OK', 69, '69 lignes')").run();
+ok(!(await eveil(q, J('2026-11-18'))).actif, 'StockAnalysis sert : en sommeil');
+db.prepare("INSERT INTO runs (debut, etape, statut, lignes_ecrites, message) VALUES ('2026-11-10T08:00:00Z', 'incr8_comptes_intl_t0', 'PANNE', 0, 'canari rouge : MC.PA statut 200')").run();
+ok(!(await eveil(q, J('2026-11-14'))).actif, 'canari rouge depuis 4 j : pas encore');
+ok((await eveil(q, J('2026-11-18'))).actif, 'canari rouge depuis 8 j : éveil');
+const ln = lignesNeuves({ revenue: { 2024: 10, 2025: 12 }, capex: { 2025: -3 }, ebit: { 2025: 2 } }, new Set([2024]));
+ok(ln.length === 1 && ln[0].exercice === 2025 && ln[0].l.capex === 3 && ln[0].l.revenue === 12, 'seul l\'exercice absent est retenu, capex en positif');
+// bout en bout avec un cœur simulé
+db.exec("INSERT INTO societe VALUES ('MC.PA', 'LVMH', 'IOHHWNUXTU8Y8Y3SJM67', 'EUR', '2026-01-01', 300e9), ('SHEL.L', 'Shell', '21380068P1DRHMJ8KU70', 'USD', '2026-01-01', 200e9)");
+db.exec("INSERT INTO comptes2 (ticker, exercice, revenue, ebit, source) VALUES ('MC.PA', 2024, 84.7e9, 19.6e9, 'stockanalysis')");
+const W = { reinitialiserCompteur() {}, async construireEsef(e, kv) {
+  const sa = JSON.parse(await kv.get('sa:' + e.yahoo));
+  return e.yahoo === 'MC.PA' ? { statut: 'OK', complet: true, devise: 'EUR', series: { revenue: { 2024: sa.series.revenue[2024], 2025: 80.8e9 }, ebit: { 2025: 17.8e9 } } }
+                             : { statut: 'OK', complet: true, devise: 'EUR', series: { revenue: { 2025: 1 } } }; } };
+process.argv.push('--forcer');
+const B = await main({ d1: q, W });
+const l25 = db.prepare("SELECT * FROM comptes2 WHERE ticker = 'MC.PA' AND exercice = 2025").get();
+ok(l25 && l25.revenue === 80.8e9 && l25.source === 'esef' && db.prepare("SELECT source FROM comptes2 WHERE ticker='MC.PA' AND exercice=2024").get().source === 'stockanalysis', 'LVMH : 2025 ajouté depuis ESEF, 2024 StockAnalysis intact');
+ok(B.devise === 1 && !db.prepare("SELECT 1 FROM comptes2 WHERE ticker = 'SHEL.L'").get(), 'Shell : devise ESEF ≠ devise connue → écartée, rien écrit');
+ok(/1 exercice\(s\) écrits/.test(db.prepare("SELECT message FROM runs WHERE etape = 'incr14_esef_intl'").get().message), 'passage journalisé');
+process.exit(echecs ? 1 : 0);

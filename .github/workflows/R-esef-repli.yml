@@ -1,0 +1,34 @@
+name: R repli ESEF
+# En sommeil : chaque jour, deux lectures D1 pour savoir si StockAnalysis est
+# tombée (canari rouge 7 jours). Éveillé, il comble les exercices manquants
+# des sociétés européennes depuis leurs rapports ESEF officiels.
+on:
+  schedule:
+    - cron: '47 7 * * *'
+  workflow_dispatch:
+    inputs:
+      options:
+        description: 'ex. --forcer --essai --lot=5'
+        required: false
+        default: ''
+
+concurrency:
+  group: screener-ecriture
+  cancel-in-progress: false
+
+jobs:
+  esef:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Repli ESEF des comptes internationaux
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_D1_SCREENER_ID: ${{ secrets.CF_D1_SCREENER_ID }}
+          OPTIONS: ${{ inputs.options }}
+        run: node src/incr14_esef_intl.mjs $OPTIONS
