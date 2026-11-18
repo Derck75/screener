@@ -20,14 +20,19 @@ ok(ln.length === 1 && ln[0].exercice === 2025 && ln[0].l.capex === 3 && ln[0].l.
 // bout en bout avec un cœur simulé
 db.exec("INSERT INTO societe VALUES ('MC.PA', 'LVMH', 'IOHHWNUXTU8Y8Y3SJM67', 'EUR', '2026-01-01', 300e9), ('SHEL.L', 'Shell', '21380068P1DRHMJ8KU70', 'USD', '2026-01-01', 200e9)");
 db.exec("INSERT INTO comptes2 (ticker, exercice, revenue, ebit, source) VALUES ('MC.PA', 2024, 84.7e9, 19.6e9, 'stockanalysis')");
+const passes = {};
 const W = { reinitialiserCompteur() {}, async construireEsef(e, kv) {
   const sa = JSON.parse(await kv.get('sa:' + e.yahoo));
+  passes[e.yahoo] = (passes[e.yahoo] || 0) + 1;
+  // archive lue en plusieurs passages : la validation dit « mapping » tant que rien n'est lu
+  if (e.yahoo === 'MC.PA' && passes[e.yahoo] < 3) return { statut: 'KO', cause: 'mapping', complet: false, curseur: 0, octet: passes[e.yahoo] * 4e6 };
   return e.yahoo === 'MC.PA' ? { statut: 'OK', complet: true, devise: 'EUR', series: { revenue: { 2024: sa.series.revenue[2024], 2025: 80.8e9 }, ebit: { 2025: 17.8e9 } } }
                              : { statut: 'OK', complet: true, devise: 'EUR', series: { revenue: { 2025: 1 } } }; } };
 process.argv.push('--forcer');
 const B = await main({ d1: q, W });
 const l25 = db.prepare("SELECT * FROM comptes2 WHERE ticker = 'MC.PA' AND exercice = 2025").get();
 ok(l25 && l25.revenue === 80.8e9 && l25.source === 'esef' && db.prepare("SELECT source FROM comptes2 WHERE ticker='MC.PA' AND exercice=2024").get().source === 'stockanalysis', 'LVMH : 2025 ajouté depuis ESEF, 2024 StockAnalysis intact');
+ok(passes['MC.PA'] === 3, 'mapping KO en cours de lecture : on poursuit la lecture au lieu de conclure');
 ok(B.devise === 1 && !db.prepare("SELECT 1 FROM comptes2 WHERE ticker = 'SHEL.L'").get(), 'Shell : devise ESEF ≠ devise connue → écartée, rien écrit');
 ok(/1 exercice\(s\) écrits/.test(db.prepare("SELECT message FROM runs WHERE etape = 'incr14_esef_intl'").get().message), 'passage journalisé');
 // politesse envers filings.xbrl.org : 429 rejoué après attente
