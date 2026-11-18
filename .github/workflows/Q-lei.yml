@@ -1,0 +1,34 @@
+name: Q LEI
+# Mensuel (le 3 a 6 h 41 UTC) : identifiant legal de chaque societe, cle des
+# depots officiels (ESEF) pour le repli des comptes internationaux.
+on:
+  schedule:
+    - cron: '41 6 3 * *'
+  workflow_dispatch:
+    inputs:
+      lot:
+        description: 'ISIN par run si le fichier GLEIF est indisponible (repli API)'
+        required: false
+        default: '300'
+
+concurrency:
+  group: screener-ecriture
+  cancel-in-progress: false
+
+jobs:
+  lei:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - name: LEI depuis la correspondance ISIN-LEI
+        env:
+          CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DB: ${{ secrets.CF_D1_SCREENER_ID }}
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          PLAFOND_ECRITURES: "70000"
+        run: python src/incr13_lei.py --lot "${{ inputs.lot || '300' }}"
