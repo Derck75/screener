@@ -30,6 +30,28 @@ const COLONNES = ['revenue', 'netIncome', 'ebit', 'grossProfit', 'cfo', 'capex',
   'intangTot', 'intangExGW', 'goodwill', 'receivables', 'inventory', 'payables', 'currentLiab', 'debt', 'cash', 'equity', 'shares', 'deferredRev', 'deferredRevNC', 'flottant'];
 const EUROPE = ['.PA', '.DE', '.L', '.AS', '.MI', '.MC', '.ST', '.OL', '.HE', '.CO', '.BR', '.VI', '.LS', '.IR', '.WA', '.AT', '.IC', '.BD', '.PR'];
 const RUN_TS = new Date().toISOString().slice(0, 19) + 'Z';
+const PAUSE_MS = Number(E.PAUSE_ESEF_MS || 6000);
+
+/* filings.xbrl.org limite le débit (HTTP 429 constatés à la première mesure,
+   24 refus sur 25 : archives non lues, donc rien à calibrer). Toute requête
+   vers l'index est espacée et rejouée sur 429, avant que le cœur ne la voie. */
+export function installerPolitesse(attente = ms => new Promise(z => setTimeout(z, ms))) {
+  const fetchBrut = globalThis.fetch;
+  let dernier = 0;
+  globalThis.fetch = async (u, init) => {
+    const url = String(u && u.url ? u.url : u);
+    if (!/filings\.xbrl\.org/.test(url)) return fetchBrut(u, init);
+    for (let i = 0; ; i++) {
+      const ecart = Date.now() - dernier;
+      if (ecart < 1500) await attente(1500 - ecart);
+      dernier = Date.now();
+      const r = await fetchBrut(u, init);
+      if (r.status !== 429 || i >= 4) return r;
+      const ra = Number(r.headers && r.headers.get && r.headers.get('retry-after')) || 0;
+      await attente(Math.max(ra * 1000, 10000 * (i + 1)));
+    }
+  };
+}
 
 export async function d1(sql, params = []) {
   const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${E.CF_ACCOUNT_ID}/d1/database/${E.CF_D1_SCREENER_ID}/query`,
@@ -77,6 +99,7 @@ export async function main(dep = {}) {
   if (!ev.actif) { console.log(`En sommeil — ${ev.motif}.`); return { sommeil: true }; }
   console.log(`Éveillé — ${ev.motif}${ESSAI ? ' · ESSAI, rien n\'est écrit' : ''}`);
   const cibles = await q(`SELECT s.ticker, s.nom, s.lei, s.devise_comptes FROM societe s WHERE s.lei IS NOT NULL AND (${EUROPE.map(p => `s.ticker LIKE '%${p}'`).join(' OR ')}) ORDER BY ${ARGS.has('--grandes') ? 's.capitalisation DESC' : 's.comptes_maj ASC, s.capitalisation DESC'} LIMIT ?`, [LOT]);
+  if (!dep.W) installerPolitesse();
   const W = dep.W || (await chargerModule(await telechargerWorker())).W;
   const B = { societes: 0, validees: 0, refusees: 0, absentes: 0, devise: 0, lignes: 0, erreurs: 0 };
   for (const c of cibles) {
@@ -94,7 +117,7 @@ export async function main(dep = {}) {
         await kv.put('esef:' + c.ticker, JSON.stringify(r));
         if (r.complet || r.statut === 'KO' && r.cause) break;
       }
-      if (!r || r.statut !== 'OK' || !r.series) { r && r.cause === 'absent_index' ? B.absentes++ : B.refusees++; if (ESSAI) console.log(`  ${c.ticker} : ${r ? (r.cause || r.statut) + ' — ' + String(r.erreur || '').slice(0, 90) : 'rien'}`); continue; }
+      if (!r || r.statut !== 'OK' || !r.series) { r && r.cause === 'absent_index' ? B.absentes++ : B.refusees++; if (ESSAI) console.log(`  ${c.ticker} : ${r ? (r.cause || r.statut) + ' — ' + String(r.erreur || '').slice(0, 90) + ` · ${Object.keys(r.brut || {}).length} postes lus (CA : ${Object.keys((r.brut || {}).revenue || {}).join(',') || '—'}), ${(r.depots || []).length} dépôts, curseur ${r.curseur || 0}, ${Object.values(r.depotsLus || {}).map(d => d.statut + '/' + (d.ecrits || 0)).join(' ')}` : 'rien'}`); continue; }
       if (c.devise_comptes && r.devise && c.devise_comptes !== r.devise) { B.devise++; continue; }
       B.validees++;
       const neuves = lignesNeuves(r.series, new Set(rows.map(x => Number(x.exercice))));
@@ -106,6 +129,7 @@ export async function main(dep = {}) {
       }
       await q('UPDATE societe SET comptes_maj = ? WHERE ticker = ?', [RUN_TS, c.ticker]);
     } catch (err) { B.erreurs++; console.log(`  ${c.ticker} : ${String(err && err.message || err).slice(0, 120)}`); }
+    if (!dep.W) await new Promise(z => setTimeout(z, PAUSE_MS));
   }
   const msg = `${ESSAI ? 'ESSAI · ' : ''}${B.societes} sociétés : ${B.validees} calibrées, ${B.refusees} refusées, ${B.absentes} absentes de l'index, ${B.devise} devise divergente · ${B.lignes} exercice(s) ${ESSAI ? 'à écrire' : 'écrits'}`;
   console.log(msg);
