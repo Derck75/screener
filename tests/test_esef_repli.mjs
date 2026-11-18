@@ -1,7 +1,7 @@
 /* incr14 — repli ESEF en sommeil : éveil, calibration réutilisée, exercices
    absents seulement, devise divergente écartée. */
 import { DatabaseSync } from 'node:sqlite';
-import { eveil, lignesNeuves, main } from '../src/incr14_esef_intl.mjs';
+import { eveil, lignesNeuves, main, installerPolitesse } from '../src/incr14_esef_intl.mjs';
 let echecs = 0;
 const ok = (c, m) => { console.log((c ? '✅ ' : '❌ ') + m); if (!c) echecs++; };
 const db = new DatabaseSync(':memory:');
@@ -30,4 +30,10 @@ const l25 = db.prepare("SELECT * FROM comptes2 WHERE ticker = 'MC.PA' AND exerci
 ok(l25 && l25.revenue === 80.8e9 && l25.source === 'esef' && db.prepare("SELECT source FROM comptes2 WHERE ticker='MC.PA' AND exercice=2024").get().source === 'stockanalysis', 'LVMH : 2025 ajouté depuis ESEF, 2024 StockAnalysis intact');
 ok(B.devise === 1 && !db.prepare("SELECT 1 FROM comptes2 WHERE ticker = 'SHEL.L'").get(), 'Shell : devise ESEF ≠ devise connue → écartée, rien écrit');
 ok(/1 exercice\(s\) écrits/.test(db.prepare("SELECT message FROM runs WHERE etape = 'incr14_esef_intl'").get().message), 'passage journalisé');
+// politesse envers filings.xbrl.org : 429 rejoué après attente
+let n = 0; const att = [];
+globalThis.fetch = async () => ({ status: ++n < 3 ? 429 : 200, headers: { get: () => null } });
+installerPolitesse(async ms => { att.push(ms); });
+const r429 = await fetch('https://filings.xbrl.org/api/filings');
+ok(r429.status === 200 && n === 3 && att.filter(x => x >= 10000).length === 2, '429 de filings.xbrl.org : rejoué après 10 puis 20 s');
 process.exit(echecs ? 1 : 0);
