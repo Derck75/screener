@@ -78,13 +78,34 @@ export class KVMemoire {
   async list() { return { keys: [...this.m.keys()].map(name => ({ name })), list_complete: true }; }
 }
 
-/* Lignes neuves à écrire : exercices absents de la base, CA ou EBIT présents. */
+/* POSTES SÛRS — la réponse au risque de mélange. La calibration du cœur
+   accepte une société dès qu'une majorité de postes concorde, et écrit aussi
+   des postes tolérés (jusqu'à 5 %) ou sans recouvrement. Ici on n'ajoute un
+   exercice à une série StockAnalysis que pour les postes qui tombent AU
+   DEMI-POUR-CENT près sur TOUS les exercices communs, au moins deux : même
+   définition prouvée, donc aucune rupture de série à la jonction. Le reste
+   de la ligne reste vide plutôt que d'être comblé par une autre définition. */
+export const TOL_SUR = 0.005;
+export function postesSurs(series, ref) {
+  const out = {};
+  for (const c of Object.keys(series || {})) {
+    const sr = ref[c]; if (!sr) continue;
+    const communs = Object.keys(series[c]).filter(a => Number.isFinite(series[c][a]) && Number.isFinite(sr[a]) && sr[a] !== 0);
+    if (communs.length < 2) continue;
+    const sans = c === 'capex' ? Math.abs : x => x;
+    if (communs.every(a => Math.abs(sans(series[c][a]) - sans(sr[a])) / Math.abs(sans(sr[a])) <= TOL_SUR)) out[c] = series[c];
+  }
+  return out;
+}
+
+/* Lignes neuves à écrire : exercices POSTÉRIEURS au dernier connu (le repli
+   prolonge la série, il ne réécrit pas son passé), CA ou EBIT présents. */
 export function lignesNeuves(series, connus) {
   const ans = new Set();
   for (const c of Object.keys(series || {})) for (const a of Object.keys(series[c])) ans.add(Number(a));
   const out = [];
   for (const a of [...ans].sort()) {
-    if (connus.has(a)) continue;
+    if (connus.has(a) || (connus.size && a <= Math.max(...connus))) continue;
     const l = Object.fromEntries(COLONNES.map(c => [c, series[c] && Number.isFinite(series[c][a]) ? series[c][a] : null]));
     if (l.revenue === null && l.ebit === null) continue;
     if (l.capex !== null) l.capex = Math.abs(l.capex);
@@ -130,7 +151,9 @@ export async function main(dep = {}) {
       if (!r || r.statut !== 'OK' || !r.series) { r && r.cause === 'absent_index' ? B.absentes++ : B.refusees++; if (ESSAI) console.log(`  ${c.ticker} : ${r ? (r.cause || r.statut) + ' — ' + String(r.erreur || '').slice(0, 90) + ` · ${Object.keys(r.brut || {}).length} postes lus (CA : ${Object.keys((r.brut || {}).revenue || {}).join(',') || '—'}), ${(r.depots || []).length} dépôts, curseur ${r.curseur || 0}, ${Object.values(r.depotsLus || {}).map(d => d.statut + '/' + (d.ecrits || 0)).join(' ')}` : 'rien'}`); continue; }
       if (c.devise_comptes && r.devise && c.devise_comptes !== r.devise) { B.devise++; continue; }
       B.validees++;
-      const neuves = lignesNeuves(r.series, new Set(rows.map(x => Number(x.exercice))));
+      const surs = postesSurs(r.series, ref);
+      const neuves = lignesNeuves(surs, new Set(rows.map(x => Number(x.exercice))));
+      if (ESSAI) console.log(`  ${c.ticker} : calibrée · ${Object.keys(surs).length}/${Object.keys(r.series).length} postes sûrs · à écrire : ${neuves.map(n => n.exercice).join(',') || 'rien'}`);
       if (!neuves.length || ESSAI) { B.lignes += ESSAI ? neuves.length : 0; continue; }
       for (const n of neuves) {
         await q(`INSERT OR IGNORE INTO comptes2 (ticker, exercice, ${COLONNES.join(', ')}, source) VALUES (?, ?, ${COLONNES.map(() => '?').join(', ')}, 'esef')`,
