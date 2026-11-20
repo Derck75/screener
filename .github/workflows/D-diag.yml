@@ -6,6 +6,9 @@ on:
         description: "Diagnostic des sources de cours seulement (lecture seule)"
         type: boolean
         default: false
+      sonde:
+        description: "URL publique à sonder (lecture seule, 4 000 premiers caractères) — jamais une ligne détenue"
+        default: ""
 
 jobs:
   diagnostic:
@@ -20,8 +23,15 @@ jobs:
       - name: Sources de cours (lecture seule, aucune ecriture)
         if: ${{ inputs.sources == true }}
         run: python src/diag_sources.py
+      - name: Sonde d'URL (lecture seule)
+        if: ${{ inputs.sonde != '' }}
+        env:
+          URL: ${{ inputs.sonde }}
+        run: |
+          curl -sS -m 30 -A "Mozilla/5.0" -o /tmp/r -w "HTTP %{http_code} · %{size_download} octets · %{content_type}\n" "$URL" || true
+          head -c 4000 /tmp/r; echo
       - name: Diagnostic lecture seule
-        if: ${{ inputs.sources != true }}
+        if: ${{ inputs.sources != true && inputs.sonde == '' }}
         env:
           PYTHONUNBUFFERED: "1"
           CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
