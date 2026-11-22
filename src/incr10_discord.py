@@ -288,8 +288,16 @@ def juste_valeur(c):
     pastille = "🟢" if c.get("fv_fiabilite") == "complete" else "🟠"
     sens = f"décote **{round(100 * d)} %**" if d >= 0 else f"surcote {round(-100 * d)} %"
     montant = f"{cours * k:,.2f}".replace(",", " ").replace(".", ",")
-    txt = (f"{pastille} Juste valeur ≈ **{montant} {dev}** · {sens}"
-           + f" · croissance retenue {c.get('fv_g') or 0:.0f} %/an\n")
+    meth = c.get("fv_methode") or "dcf"
+    fmt = lambda x: f"{cours * x:,.0f}".replace(",", " ")
+    if meth == "dcf+croissance" and c.get("fv_dcf_sur_cours") and c.get("fv_croissance_sur_cours"):
+        detail = f" · moyenne DCF {fmt(c['fv_dcf_sur_cours'])} / trajectoire du CA {fmt(c['fv_croissance_sur_cours'])}"
+    elif meth == "croissance":
+        detail = " · sur la trajectoire du CA"
+    else:
+        detail = f" · croissance retenue {c.get('fv_g') or 0:.0f} %/an"
+    fusee = "🚀 " if c.get("forte_croissance") == 1 else ""
+    txt = f"{pastille} {fusee}Juste valeur ≈ **{montant} {dev}** · {sens}{detail}\n"
     if c.get("fv_fiabilite") != "complete" and c.get("fv_note"):
         txt += f"   partielle : {c['fv_note']}\n"
     return txt
@@ -415,7 +423,8 @@ def main():
                          "croissance_implicite": "REAL", "croissance_demontree": "REAL",
                          "concordance": "REAL", "eva_sur_cours": "REAL",
                          "capi_eur": "REAL", "taux_obstacle": "REAL", "moat_propre": "TEXT",
-                         "fv_sur_cours": "REAL", "fv_g": "REAL", "fv_fiabilite": "TEXT", "fv_note": "TEXT"})
+                         "fv_sur_cours": "REAL", "fv_g": "REAL", "fv_fiabilite": "TEXT", "fv_note": "TEXT",
+                         "fv_dcf_sur_cours": "REAL", "fv_croissance_sur_cours": "REAL", "fv_methode": "TEXT", "forte_croissance": "INTEGER"})
 
     s.phase("lecture")
     base = ("FROM metriques m JOIN societe s ON s.ticker = m.ticker "
@@ -424,7 +433,8 @@ def main():
               "m.epv_sur_cours, m.roic_median, m.n_ex_total, m.score_moat, "
               "m.score_moat_max, m.drapeaux, m.eva_sur_cours, m.part_tresorerie, "
               "m.croissance_implicite, m.croissance_demontree, m.cours, m.concordance, m.taux_obstacle, "
-              "m.n_ex_roic_sup_seuil, m.roic_organique, m.fv_sur_cours, m.fv_g, m.fv_fiabilite, m.fv_note")
+              "m.n_ex_roic_sup_seuil, m.roic_organique, m.fv_sur_cours, m.fv_g, m.fv_fiabilite, m.fv_note, "
+              "m.fv_dcf_sur_cours, m.fv_croissance_sur_cours, m.fv_methode, m.forte_croissance")
     ordre = ("ORDER BY (COALESCE(m.concordance, m.epv_sur_cours) > 1.0) ASC, "
              "COALESCE(m.concordance, m.epv_sur_cours) DESC")
     candidates = d1(f"SELECT {champs} {base} {ordre}")[0]["results"]
