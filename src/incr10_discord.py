@@ -270,6 +270,31 @@ def pc(x):
     return "n.c." if x is None else f"{round(100 * x)} %"
 
 
+DEVISE_PLACE = {"": "$", ".L": "GBp", ".SW": "CHF", ".ST": "SEK", ".CO": "DKK", ".OL": "NOK", ".IC": "ISK",
+                ".WA": "PLN", ".PR": "CZK", ".BD": "HUF", ".T": "¥", ".KS": "KRW", ".TW": "TWD", ".TO": "CAD",
+                ".AX": "AUD", ".HK": "HKD"}
+
+
+def juste_valeur(c):
+    """22/11/2026 — Juste valeur rapide (incr7) : DCF a 80 % de la croissance
+    demontree, au taux-obstacle de l'enveloppe. 🟢 complete, 🟠 partielle
+    (premisse manquante, nommee). Elle trie ; l'analyse decide."""
+    k, cours = c.get("fv_sur_cours"), c.get("cours")
+    if not k or not cours:
+        return "Juste valeur rapide : n.c. (FCF négatif ou absent)\n"
+    t = c["ticker"]
+    dev = DEVISE_PLACE.get("." + t.split(".")[-1] if "." in t else "", "€")
+    d = 1 - 1 / k
+    pastille = "🟢" if c.get("fv_fiabilite") == "complete" else "🟠"
+    sens = f"décote **{round(100 * d)} %**" if d >= 0 else f"surcote {round(-100 * d)} %"
+    montant = f"{cours * k:,.2f}".replace(",", " ").replace(".", ",")
+    txt = (f"{pastille} Juste valeur ≈ **{montant} {dev}** · {sens}"
+           + f" · croissance retenue {c.get('fv_g') or 0:.0f} %/an\n")
+    if c.get("fv_fiabilite") != "complete" and c.get("fv_note"):
+        txt += f"   partielle : {c['fv_note']}\n"
+    return txt
+
+
 def ligne(c):
     pays = c.get("pays_siege") or "?"
     pea = "PEA" if c.get("eligible_pea") == 1 else "CTO"
@@ -284,16 +309,11 @@ def ligne(c):
     # il sert a interroger l'outil, pas a reconnaitre la societe.
     t = (f"**{str(c.get('nom') or '')[:40]}**  `{c['ticker']}`\n"
          + (f"{act} · {voie}\n" if act else f"{voie}\n")
-         # Formulation directe plutot que le sigle : « EPV/cours 60 % » ne dit
-         # rien tant qu'on n'a pas la definition en tete.
-         + f"Profits actuels : **{pc(c.get('epv_sur_cours'))} du cours**"
-         + (f" · avec croissance : {round(100 * c['eva_sur_cours'])} %"
-            if c.get("eva_sur_cours") is not None else "") + "\n"
-         + (f"Seuil N : **{c['croissance_implicite']:+.1f} %/an** sur 10 ans "
-            f"(taux-obstacle {c.get('taux_obstacle') or '?'} %), "
-            f"la société a fait {c['croissance_demontree']:+.1f} %\n"
+         + juste_valeur(c)
+         + f"Sans croissance : {pc(c.get('epv_sur_cours'))} du cours"
+         + (f" · le prix exige {c['croissance_implicite']:+.1f} %/an, la société a fait {c['croissance_demontree']:+.1f} %"
             if c.get("croissance_implicite") is not None
-            and c.get("croissance_demontree") is not None else "")
+            and c.get("croissance_demontree") is not None else "") + "\n"
          + f"ROIC {round(c['roic_median'])} %, au-dessus de 9 % sur "
          + f"{c.get('n_ex_roic_sup_seuil', '?')}/{c['n_ex_total']} ex."
          + (" ⚠️ cycle incomplet" if (c.get("n_ex_total") or 0) < 8 else "") + " · "
@@ -303,8 +323,9 @@ def ligne(c):
 
 def compacte(c):
     """Une ligne par societe, pour la liste au-dela des cinq premieres."""
-    return (f"**{str(c.get('nom') or '')[:30]}** `{c['ticker']}` "
-            f"{pc(c.get('epv_sur_cours'))}"
+    k = c.get("fv_sur_cours")
+    fv = (("🟢" if c.get("fv_fiabilite") == "complete" else "🟠") + f" décote {round(100 * (1 - 1 / k))} %") if k else "FV n.c."
+    return (f"**{str(c.get('nom') or '')[:30]}** `{c['ticker']}` {fv}"
             + (" · PEA" if c.get("eligible_pea") == 1 else ""))
 
 
@@ -393,7 +414,8 @@ def main():
                          "fcf_cagr5": "REAL", "part_tresorerie": "REAL",
                          "croissance_implicite": "REAL", "croissance_demontree": "REAL",
                          "concordance": "REAL", "eva_sur_cours": "REAL",
-                         "capi_eur": "REAL", "taux_obstacle": "REAL", "moat_propre": "TEXT"})
+                         "capi_eur": "REAL", "taux_obstacle": "REAL", "moat_propre": "TEXT",
+                         "fv_sur_cours": "REAL", "fv_g": "REAL", "fv_fiabilite": "TEXT", "fv_note": "TEXT"})
 
     s.phase("lecture")
     base = ("FROM metriques m JOIN societe s ON s.ticker = m.ticker "
@@ -402,7 +424,7 @@ def main():
               "m.epv_sur_cours, m.roic_median, m.n_ex_total, m.score_moat, "
               "m.score_moat_max, m.drapeaux, m.eva_sur_cours, m.part_tresorerie, "
               "m.croissance_implicite, m.croissance_demontree, m.cours, m.concordance, m.taux_obstacle, "
-              "m.n_ex_roic_sup_seuil, m.roic_organique")
+              "m.n_ex_roic_sup_seuil, m.roic_organique, m.fv_sur_cours, m.fv_g, m.fv_fiabilite, m.fv_note")
     ordre = ("ORDER BY (COALESCE(m.concordance, m.epv_sur_cours) > 1.0) ASC, "
              "COALESCE(m.concordance, m.epv_sur_cours) DESC")
     candidates = d1(f"SELECT {champs} {base} {ordre}")[0]["results"]

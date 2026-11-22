@@ -19,7 +19,7 @@
  * publie en dollars et cote en couronnes : la capitalisation est convertie au
  * cours de reference BCE du jour avant tout ratio.
  */
-import { croissanceImplicite, TERMINAL_G, NOYAU_SOURCE } from './noyau.js';
+import { croissanceImplicite, valeurDCF, TERMINAL_G, NOYAU_SOURCE } from './noyau.js';
 
 const { CF_ACCOUNT, CF_DB, CF_TOKEN } = process.env;
 const URL_D1 = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/d1/database/${CF_DB}/query`;
@@ -27,6 +27,19 @@ const RUN_TS = new Date().toISOString().slice(0, 19) + "Z";
 const ANNEES = 10;
 const OBSTACLE = { pea: 0.10, cto: 0.115 };
 const EPV_INVRAISEMBLABLE = 5;
+/* JUSTE VALEUR RAPIDE (22/11/2026). Le screener ne donnait aucune fair value :
+   des ratios (N, EPV/cours) qui « veulent tout et rien dire » pour décider
+   d'ouvrir un dossier. Ici, une seule valeur, simple et explicable, par le
+   MÊME moteur DCF que le serveur : le FCF de départ croît à 80 % de la
+   croissance démontrée (plafonnée à 15 %/an) pendant dix ans, puis 2,5 %,
+   actualisé au taux-obstacle de l'enveloppe (10 % PEA, 11,5 % CTO), moins la
+   dette nette. 80 % : c'est la frontière de la bande verte du cadre (N ≤ 80 %
+   du réalisé) — une décote positive dit donc « le prix exige moins que 80 % de
+   ce que la société a déjà fait ». Elle trie et alerte ; l'analyse (dossier,
+   moat, fv blended) reste seule à décider. « partielle » quand une prémisse
+   manque (croissance non démontrée, base contestable, historique court,
+   devise supposée, croissance plafonnée) : affichée en orange, jamais en vert. */
+export const FV_PART = 0.8, FV_G_MAX = 15;
 // Ecart, en points de croissance annuelle, au-dela duquel un FCF « croit
 // nettement plus vite » que le CA et l EBIT (§11 du cadre).
 export const ECART_FCF = 10;
@@ -106,7 +119,8 @@ const tx = v => (v === null || v === undefined) ? "NULL" : "'" + String(v).slice
 export function valoriser(l, eur) {
   const o = { croissance_implicite: null, taux_obstacle: null, n_ratio: null, bande_n: null, n_note: null,
     epv_sur_cours: null, eva_sur_cours: null, concordance: null, part_tresorerie: null,
-    fcf_yield: null, per_courant: null, capi_eur: null, devise_ecart: null };
+    fcf_yield: null, per_courant: null, capi_eur: null, devise_ecart: null,
+    fv_sur_cours: null, fv_g: null, fv_fiabilite: null, fv_note: null };
   const devC = devisePlace(l.ticker);
   const devF = l.devise_comptes || (l.ticker.includes(".") ? null : "USD");
   const capiC = Number(l.capitalisation);
@@ -169,6 +183,24 @@ export function valoriser(l, eur) {
   }
   if (Number.isFinite(Number(l.eva_capitaux)) && l.eva_capitaux !== null) o.eva_sur_cours = Number(l.eva_capitaux) / capi;
   if (o.epv_sur_cours !== null && o.eva_sur_cours !== null) o.concordance = Math.min(o.epv_sur_cours, o.eva_sur_cours);
+  // ---- juste valeur rapide ----
+  if (fcf0 > 0) {
+    const motifs = [];
+    let g = 0;
+    if (l.croissance_demontree === null || l.croissance_demontree === undefined || !Number.isFinite(gd)) motifs.push("croissance non démontrée");
+    else if (gd <= 0) motifs.push("croissance démontrée nulle ou négative");
+    else { g = Math.min(gd * FV_PART, FV_G_MAX); if (gd * FV_PART > FV_G_MAX) motifs.push(`croissance plafonnée à ${FV_G_MAX} %`); }
+    if (o.bande_n === "reserve") motifs.push("base contestable");
+    if (Number.isFinite(Number(l.n_ex_total)) && Number(l.n_ex_total) < 8) motifs.push("historique court");
+    if (o.devise_ecart && !o.devise_ecart.includes("/")) motifs.push("devise supposée");
+    const ve = valeurDCF(fcf0, g / 100, r, TERMINAL_G, ANNEES);
+    if (Number.isFinite(ve) && ve - dn > 0) {
+      o.fv_sur_cours = (ve - dn) / capi;
+      o.fv_g = g;
+      o.fv_fiabilite = motifs.length ? "partielle" : "complete";
+      o.fv_note = motifs.length ? motifs.join(", ") : null;
+    }
+  }
   o.part_tresorerie = dn < 0 ? -dn / capi : 0;
   if (fcf0 > 0) o.fcf_yield = fcf0 / capi;
   const rn = Number(l.rn_dernier);
@@ -177,15 +209,16 @@ export function valoriser(l, eur) {
 }
 
 const COLS = ["croissance_implicite", "taux_obstacle", "n_ratio", "bande_n", "n_note", "epv_sur_cours",
-  "eva_sur_cours", "concordance", "part_tresorerie", "fcf_yield", "per_courant", "capi_eur", "devise_ecart"];
-const TEXTE = new Set(["bande_n", "n_note", "devise_ecart"]);
+  "eva_sur_cours", "concordance", "part_tresorerie", "fcf_yield", "per_courant", "capi_eur", "devise_ecart",
+  "fv_sur_cours", "fv_g", "fv_fiabilite", "fv_note"];
+const TEXTE = new Set(["bande_n", "n_note", "devise_ecart", "fv_fiabilite", "fv_note"]);
 
 export async function main() {
   console.log(`incr7_valorisation v1 — Run ${RUN_TS} — noyau ${NOYAU_SOURCE.worker} (${NOYAU_SOURCE.empreinte})`);
   await migrer("metriques", { croissance_implicite: "REAL", taux_obstacle: "REAL", n_ratio: "REAL",
     bande_n: "TEXT", n_note: "TEXT", epv_sur_cours: "REAL", eva_sur_cours: "REAL", concordance: "REAL",
     part_tresorerie: "REAL", fcf_yield: "REAL", per_courant: "REAL", capi_eur: "REAL",
-    devise_ecart: "TEXT", maj_valorisation: "TEXT" });
+    devise_ecart: "TEXT", maj_valorisation: "TEXT", fv_sur_cours: "REAL", fv_g: "REAL", fv_fiabilite: "TEXT", fv_note: "TEXT" });
   await migrer("societe", { devise_comptes: "TEXT" });
 
   // Une societe sans cours (radiee, liste muette) ou desormais exclue ne doit
@@ -201,7 +234,7 @@ export async function main() {
   const lignes = [];
   for (let p = 0; ; p++) {
     const r = (await d1("SELECT m.ticker, m.cours, m.fcf_depart, m.dette_nette, m.epv_capitaux, m.eva_capitaux, "
-      + "m.croissance_demontree, m.fcf_divergence, m.base_creux, m.rn_dernier, s.capitalisation, s.eligible_pea, s.devise_comptes "
+      + "m.croissance_demontree, m.fcf_divergence, m.base_creux, m.rn_dernier, m.n_ex_total, s.capitalisation, s.eligible_pea, s.devise_comptes "
       + "FROM metriques m JOIN societe s ON s.ticker = m.ticker "
       + "WHERE m.exclusion IS NULL AND m.cours IS NOT NULL ORDER BY m.ticker LIMIT 5000 OFFSET ?", [p * 5000]))[0].results;
     if (!r.length) break;
@@ -216,6 +249,7 @@ export async function main() {
       sortie.push([l.ticker, o]);
       if (o.croissance_implicite !== null) compte("n_calcule");
       if (o.bande_n) compte("bande_" + o.bande_n);
+      if (o.fv_fiabilite) compte("fv_" + o.fv_fiabilite);
       if (o.devise_ecart && o.devise_ecart.includes("/")) compte("devise_convertie");
       if (o.devise_ecart && !o.devise_ecart.includes("/")) compte("devise_supposee");
     } catch (e) { erreur("valorisation", `${l.ticker} ${e.message}`); }
