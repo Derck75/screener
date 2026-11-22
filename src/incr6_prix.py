@@ -627,11 +627,32 @@ def main():
 
     print(f"  {len(maj)} cotations exploitables, {echecs} echecs")
 
+    # 22/11/2026 — Les cours du jour DEJA ECRITS par le serveur (pre-cotation
+    # US de 15 h 27 depuis Cloudflare) se comptent AVANT le canari : le
+    # dimanche 22/11, les listes US n'ont pas repondu a GitHub, AAPL manquait
+    # a CE passage alors que son cours du jour etait en base — PANNE a tort,
+    # et la valorisation du jour sautee derriere elle.
+    # 17/11/2026 — PRE-COTATION DU SERVEUR. Depuis le 11/11 l'API Nasdaq refuse
+    # les machines de GitHub ; le serveur (Cloudflare) cote les americaines a
+    # 15 h 27 UTC, avant cette chaine. Un cours ecrit aujourd'hui par lui est
+    # un cours du jour : il compte dans la couverture, il n'est pas une panne.
+    jour0 = time.strftime("%Y-%m-%dT00:00:00Z", time.gmtime())
+    frais = []
+    for i in range(0, len(perimes), 90):
+        lot = perimes[i:i + 90]
+        r = d1("SELECT ticker FROM metriques WHERE ticker IN (" + ", ".join("?" * len(lot)) + ") AND maj_cours >= ?", lot + [jour0])
+        frais += [l["ticker"] for l in r[0]["results"]]
+    if frais:
+        print(f"  {len(frais)} cours du jour deja servis par le serveur (pre-cotation)")
+        s.compte("cours_serveur_du_jour", len(frais))
+
     # ---- canari -------------------------------------------------------------
     if a.tranche and CANARI_TICKER not in cibles:
         cours_canari = CANARI_COURS_MIN + 1   # le temoin n'est pas dans cette tranche
+    if (cours_canari is None or cours_canari < CANARI_COURS_MIN) and CANARI_TICKER in frais:
+        cours_canari = CANARI_COURS_MIN + 1   # cours du jour servi par le serveur
     if cours_canari is None or cours_canari < CANARI_COURS_MIN or \
-       len(maj) < 0.35 * len(cibles):
+       len(maj) + len(frais) < 0.35 * len(cibles):
         msg = (f"canari rouge : {CANARI_TICKER} = {cours_canari}, "
                f"{len(maj)}/{len(cibles)} cotations")
         print("PANNE : " + msg)
@@ -687,20 +708,6 @@ def main():
     if purges:
         print(f"  {len(purges)} cours perime(s) efface(s) : {' '.join(purges[:8])}")
         s.compte("cours_perimes", len(purges))
-
-    # 17/11/2026 — PRE-COTATION DU SERVEUR. Depuis le 11/11 l'API Nasdaq refuse
-    # les machines de GitHub ; le serveur (Cloudflare) cote les americaines a
-    # 15 h 27 UTC, avant cette chaine. Un cours ecrit aujourd'hui par lui est
-    # un cours du jour : il compte dans la couverture, il n'est pas une panne.
-    jour0 = time.strftime("%Y-%m-%dT00:00:00Z", time.gmtime())
-    frais = []
-    for i in range(0, len(perimes), 90):
-        lot = perimes[i:i + 90]
-        r = d1("SELECT ticker FROM metriques WHERE ticker IN (" + ", ".join("?" * len(lot)) + ") AND maj_cours >= ?", lot + [jour0])
-        frais += [l["ticker"] for l in r[0]["results"]]
-    if frais:
-        print(f"  {len(frais)} cours du jour deja servis par le serveur (pre-cotation)")
-        s.compte("cours_serveur_du_jour", len(frais))
 
     s.afficher()
     ko_txt = f" · listes illisibles : {', '.join(c for c, _ in LISTES_KO)}" if LISTES_KO else ""
