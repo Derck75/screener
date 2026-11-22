@@ -97,6 +97,15 @@ verifier(M('SPAC').croissance_implicite === null, 'exclue : pas valorisée');
   verifier(creux.bande_n === 'reserve' && /creux/.test(creux.n_note), 'départ en creux : réserve');
   const rouge = V.valoriser({ ...base, capitalisation: 5e10, croissance_demontree: 2, fcf_divergence: 15 }, { USD: 1, EUR: 1 });
   verifier(rouge.bande_n === 'rouge', 'un rouge reste rouge malgré la divergence');
+  // juste valeur rapide : même moteur DCF, 80 % de la croissance démontrée
+  const fv = V.valoriser({ ...base, croissance_demontree: 10, n_ex_total: 10 }, { USD: 1, EUR: 1 });
+  let vp = 0, f = 1e9; for (let t = 1; t <= 10; t++) { f *= 1.08; vp += f / Math.pow(1.115, t); }
+  const attendu = (vp + f * 1.025 / (0.115 - 0.025) / Math.pow(1.115, 10)) / 1e10;
+  verifier(Math.abs(fv.fv_sur_cours - attendu) < 1e-9 && fv.fv_g === 8 && fv.fv_fiabilite === 'complete', `FV rapide : DCF à 8 %/an (80 % de 10 %), ${fv.fv_sur_cours.toFixed(2)} × le cours, complète`);
+  verifier(div.fv_fiabilite === 'partielle' && /base contestable/.test(div.fv_note) && div.fv_g === 15, 'base contestable : partielle, croissance plafonnée à 15 %');
+  const sansG = V.valoriser({ ...base, croissance_demontree: null, n_ex_total: 5 }, { USD: 1, EUR: 1 });
+  verifier(sansG.fv_g === 0 && sansG.fv_fiabilite === 'partielle' && /non démontrée/.test(sansG.fv_note) && /historique court/.test(sansG.fv_note), 'sans croissance démontrée : FV sans croissance, partielle');
+  verifier(V.valoriser({ ...base, fcf_depart: -1 }, { USD: 1, EUR: 1 }).fv_sur_cours === null, 'FCF négatif : aucune FV inventée');
 }
 // Radiation : le cours disparait, la bande ne doit pas survivre
 db.prepare("UPDATE metriques SET cours = NULL WHERE ticker = 'CROI'").run();
