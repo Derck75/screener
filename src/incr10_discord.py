@@ -300,6 +300,8 @@ def juste_valeur(c):
     txt = f"{pastille} {fusee}Juste valeur ≈ **{montant} {dev}** · {sens}{detail}\n"
     if c.get("fv_fiabilite") != "complete" and c.get("fv_note"):
         txt += f"   partielle : {c['fv_note']}\n"
+    if c.get("fv_base"):
+        txt += f"   base : {c['fv_base']}\n"
     return txt
 
 
@@ -423,7 +425,7 @@ def main():
                          "croissance_implicite": "REAL", "croissance_demontree": "REAL",
                          "concordance": "REAL", "eva_sur_cours": "REAL",
                          "capi_eur": "REAL", "taux_obstacle": "REAL", "moat_propre": "TEXT",
-                         "fv_sur_cours": "REAL", "fv_g": "REAL", "fv_fiabilite": "TEXT", "fv_note": "TEXT",
+                         "fv_sur_cours": "REAL", "fv_g": "REAL", "fv_fiabilite": "TEXT", "fv_note": "TEXT", "fv_base": "TEXT",
                          "fv_dcf_sur_cours": "REAL", "fv_croissance_sur_cours": "REAL", "fv_methode": "TEXT", "forte_croissance": "INTEGER"})
 
     s.phase("lecture")
@@ -433,7 +435,7 @@ def main():
               "m.epv_sur_cours, m.roic_median, m.n_ex_total, m.score_moat, "
               "m.score_moat_max, m.drapeaux, m.eva_sur_cours, m.part_tresorerie, "
               "m.croissance_implicite, m.croissance_demontree, m.cours, m.concordance, m.taux_obstacle, "
-              "m.n_ex_roic_sup_seuil, m.roic_organique, m.fv_sur_cours, m.fv_g, m.fv_fiabilite, m.fv_note, "
+              "m.n_ex_roic_sup_seuil, m.roic_organique, m.fv_sur_cours, m.fv_g, m.fv_fiabilite, m.fv_note, m.fv_base, "
               "m.fv_dcf_sur_cours, m.fv_croissance_sur_cours, m.fv_methode, m.forte_croissance")
     ordre = ("ORDER BY (COALESCE(m.concordance, m.epv_sur_cours) > 1.0) ASC, "
              "COALESCE(m.concordance, m.epv_sur_cours) DESC")

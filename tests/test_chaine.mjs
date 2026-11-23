@@ -108,13 +108,24 @@ verifier(M('SPAC').croissance_implicite === null, 'exclue : pas valorisée');
   verifier(V.valoriser({ ...base, fcf_depart: -1 }, { USD: 1, EUR: 1 }).fv_sur_cours === null, 'FCF négatif : aucune FV inventée');
   // voie croissance : forte croissance du CA, valeur retenue = moyenne des deux voies
   const cpt = { ca: 5e9, margeMax: 0.25 };
-  const fc = V.valoriser({ ...base, croissance_demontree: 10, n_ex_total: 10, ca_cagr5: 25 }, { USD: 1, EUR: 1 }, cpt);
+  const fc = V.valoriser({ ...base, croissance_demontree: 10, n_ex_total: 10, ca_cagr5: 25, roic_median: 20 }, { USD: 1, EUR: 1 }, cpt);
   const vc = V.valeurCroissance(5e9, 0.2, 0.25, 0.20, 0.115) / 1e10;
   verifier(fc.forte_croissance === 1 && Math.abs(fc.fv_croissance_sur_cours - vc) < 1e-9 && fc.fv_methode === 'dcf+croissance'
     && Math.abs(fc.fv_sur_cours - (fc.fv_dcf_sur_cours + vc) / 2) < 1e-9, `forte croissance : moyenne DCF (${fc.fv_dcf_sur_cours.toFixed(2)}) et croissance (${vc.toFixed(2)})`);
-  const neg = V.valoriser({ ...base, fcf_depart: -2e8, croissance_demontree: null, ca_cagr5: 40 }, { USD: 1, EUR: 1 }, { ca: 3e9, margeMax: 0.12 });
+  const neg = V.valoriser({ ...base, fcf_depart: -2e8, croissance_demontree: null, ca_cagr5: 40, roic_median: 14 }, { USD: 1, EUR: 1 }, { ca: 3e9, margeMax: 0.12 });
   verifier(neg.fv_methode === 'croissance' && neg.fv_fiabilite === 'partielle' && neg.fv_sur_cours > 0, 'FCF négatif mais CA +40 %/an : valeur sur la trajectoire du CA, partielle');
   verifier(V.valoriser({ ...base, ca_cagr5: 5 }, { USD: 1, EUR: 1 }, cpt).fv_methode === 'dcf', 'croissance modérée : DCF seul');
+  // 23/11/2026 — garde de rentabilité, base normalisée, SBC
+  const pauvre = V.valoriser({ ...base, croissance_demontree: 10, n_ex_total: 10, ca_cagr5: 25, roic_median: 7 }, { USD: 1, EUR: 1 }, cpt);
+  verifier(pauvre.fv_methode === 'dcf' && pauvre.fv_croissance_sur_cours === null && /écartée : ROIC 7 % < 11,5 %/.test(pauvre.fv_base), 'croissance sous le taux exigé : voie croissance écartée, dite');
+  const acq = V.valoriser({ ...base, croissance_demontree: 10, n_ex_total: 10, ca_cagr5: 25, roic_median: 8, roic_organique: 18, biais_acquereur: 1 }, { USD: 1, EUR: 1 }, cpt);
+  verifier(acq.fv_methode === 'dcf+croissance', 'acquéreur : ROIC organique retenu, le goodwill ne bloque pas à tort');
+  const med = V.valoriser({ ...base, croissance_demontree: 10, n_ex_total: 10 }, { USD: 1, EUR: 1 }, { ca: 4e9, marges: [0.1, 0.4, 0.3, 0.2, 0.15, 0.25], margeMax: 0.4, sbcN: 3 });
+  let vp2 = 0, f2 = 0.25 * 4e9; for (let t = 1; t <= 10; t++) { f2 *= 1.08; vp2 += f2 / Math.pow(1.115, t); }
+  const att2 = (vp2 + f2 * 1.025 / (0.115 - 0.025) / Math.pow(1.115, 10)) / 1e10;
+  verifier(Math.abs(med.fv_sur_cours - att2) < 1e-9 && med.fv_base === 'marge FCF médiane 5 ex. · SBC déduite' && med.fv_fiabilite === 'complete', 'base : marge médiane des 5 derniers exercices × dernier CA, SBC déduite');
+  const court = V.valoriser({ ...base, croissance_demontree: 10, n_ex_total: 10 }, { USD: 1, EUR: 1 }, { ca: 4e9, marges: [0.2, 0.22], margeMax: 0.22, sbcN: 0 });
+  verifier(court.fv_sur_cours > 0 && court.fv_fiabilite === 'partielle' && /marge sur 2 exercices/.test(court.fv_note), 'deux exercices seulement : calculé quand même, partielle');
   verifier(V.valoriser({ ...base, profil_type: 'financier' }, { USD: 1, EUR: 1 }).fv_sur_cours === null && V.valoriser({ ...base, profil_type: 'float' }, { USD: 1, EUR: 1 }).fv_sur_cours === null, 'banques et assureurs : aucune juste valeur');
 }
 // Radiation : le cours disparait, la bande ne doit pas survivre
