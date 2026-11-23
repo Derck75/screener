@@ -66,7 +66,7 @@ export const FORTE_CROISSANCE = 12, CA_G_MAX = 30, MARGE_MIN = 5, MARGE_MAX = 30
    le ROIC médian (organique chez un acquéreur, le goodwill pénalisant sinon à
    tort) atteint le taux-obstacle. */
 export const MARGE_ANS = 5;
-const mediane = a => { const b = [...a].sort((x, y) => x - y), n = b.length; return n ? (n % 2 ? b[(n - 1) / 2] : (b[n / 2 - 1] + b[n / 2]) / 2) : null; };
+function mediane(liste) { const b = [...liste].sort((x, y) => x - y), n = b.length; return n ? (n % 2 ? b[(n - 1) / 2] : (b[n / 2 - 1] + b[n / 2]) / 2) : null; }
 export function valeurCroissance(ca0, marge0, margeCible, g0, r, gt = TERMINAL_G, n = ANNEES) {
   if (!(ca0 > 0) || !(r > gt)) return null;
   let ca = ca0, vp = 0, fcf = 0;
